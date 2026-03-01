@@ -25,7 +25,7 @@ public class ScraperRunnerService {
     }
 
     // Runs every x minute
-    @Scheduled(fixedRate = 60 * 60 * 1000)
+    @Scheduled(fixedRate = 360 * 60 * 1000)
     @Async
     public void runScrapers() {
         System.out.println("Starting category scraper...");
