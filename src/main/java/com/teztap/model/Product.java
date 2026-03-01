@@ -2,6 +2,11 @@ package com.teztap.model;
 
 import jakarta.persistence.*;
 import lombok.Data;
+import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.UpdateTimestamp;
+
+import java.math.BigDecimal;
+import java.sql.Date;
 
 @Entity
 @Data
@@ -16,7 +21,7 @@ public class Product {
     private String name;
 
     @Column(nullable = false)
-    private String price;
+    private BigDecimal originalPrice;
 
     @Column(nullable = false, unique = true, length = 1000)
     private String link;
@@ -24,16 +29,32 @@ public class Product {
     @Column(length = 1000)
     private String imageUrl;
 
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "category_id")
+    private Category category;
+
+    @Column
+    private BigDecimal discountPrice;
+
+    @Column
+    private BigDecimal discountPercentage;
+
+    @UpdateTimestamp
+    private Date updated;
+
+    @CreationTimestamp
+    private Date created;
+
     // Constructors
     public Product() {}
 
-    public Product(String name, String price, String link, String imageUrl) {
+    public Product(String name, BigDecimal originalPrice, String link, String imageUrl, Category category, BigDecimal discountPrice, BigDecimal discountPercentage) {
         this.name = name;
-        this.price = price;
+        this.originalPrice = originalPrice;
         this.link = link;
         this.imageUrl = imageUrl;
+        this.category = category;
+        this.discountPrice = discountPrice;
+        this.discountPercentage = discountPercentage;
     }
-
-    // Getters & Setters
-
 }

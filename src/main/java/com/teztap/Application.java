@@ -1,11 +1,9 @@
 package com.teztap;
 
-import com.teztap.service.ScraperService;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.context.ApplicationContext;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
 import java.io.File;
@@ -36,19 +34,13 @@ public class Application {
 //            System.err.println("Error downloading the file.");
 //        }
 
-        ApplicationContext context = SpringApplication.run(Application.class, args);
-
-        // Get ScraperService bean
-        ScraperService scraperService = context.getBean(ScraperService.class);
-
-        // Call scrape method manually to test
-        scraperService.scrapeProducts();
-
-        System.out.println("Test scraping finished.");
+        SpringApplication.run(Application.class, args);
 
     }
 
-    public static String encodeFileToBase64String(File file) throws IOException {
+
+
+        public static String encodeFileToBase64String (File file) throws IOException {
         // Read all bytes from the file
         byte[] fileContent = Files.readAllBytes(file.toPath());
 
@@ -56,7 +48,7 @@ public class Application {
         return Base64.getEncoder().encodeToString(fileContent);
     }
 
-    private static void downloadPDF(String urlString, String destinationPath){
+        private static void downloadPDF (String urlString, String destinationPath){
 //        String destinationPath = "./araz.pdf";
 
         try {
@@ -72,7 +64,7 @@ public class Application {
         }
     }
 
-    public static void splitPDF(String inputFilePath, String outputFilePath) {
+        public static void splitPDF (String inputFilePath, String outputFilePath){
         int startPage = 1; // 1-based
         int endPage = 10;
 
@@ -98,5 +90,6 @@ public class Application {
             e.printStackTrace();
         }
     }
+
 
 }

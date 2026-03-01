@@ -1,13 +1,9 @@
 package com.teztap;
 
 
-import com.google.cloud.documentai.v1.Document;
-import com.google.cloud.documentai.v1.DocumentProcessorServiceClient;
-import com.google.cloud.documentai.v1.DocumentProcessorServiceSettings;
-import com.google.cloud.documentai.v1.ProcessRequest;
-import com.google.cloud.documentai.v1.ProcessResponse;
-import com.google.cloud.documentai.v1.RawDocument;
+import com.google.cloud.documentai.v1.*;
 import com.google.protobuf.ByteString;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
