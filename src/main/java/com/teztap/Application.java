@@ -4,6 +4,7 @@ import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.kafka.annotation.EnableKafka;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
 import java.io.File;
@@ -15,6 +16,7 @@ import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.util.Base64;
 
+@EnableKafka
 @SpringBootApplication
 @EnableScheduling
 public class Application {
@@ -35,9 +37,12 @@ public class Application {
 //        }
 
         SpringApplication.run(Application.class, args);
+//
+//        RedisTemplate<String, Object> redisTemplate = new RedisTemplate<>();
+//        MatchingState state = new MatchingState(10L, List.of(), 0, GeometryUtils.createPoint(new BigDecimal(10.0), new BigDecimal(10.0)));
+//        redisTemplate.opsForValue().set("match:" + 10, state, 2, TimeUnit.MINUTES);
 
     }
-
 
 
         public static String encodeFileToBase64String (File file) throws IOException {

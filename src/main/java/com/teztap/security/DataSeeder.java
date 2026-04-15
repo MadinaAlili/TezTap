@@ -7,6 +7,7 @@ import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.stereotype.Component;
 
+
 @Component
 @RequiredArgsConstructor
 public class DataSeeder implements ApplicationRunner {
@@ -16,10 +17,14 @@ public class DataSeeder implements ApplicationRunner {
     @Override
     public void run(ApplicationArguments args) {
         for (Role.RoleName name : Role.RoleName.values()) {
+            System.out.println(name);
             if (roleRepository.findByName(name).isEmpty()) {
+                System.out.println(roleRepository.findByName(name));
                 Role role = new Role();
                 role.setName(name);
-                roleRepository.save(role);
+                try {
+                    roleRepository.save(role);
+                }catch(Exception ignore){}
             }
         }
     }

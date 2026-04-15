@@ -1,5 +1,6 @@
 package com.teztap.model;
 
+import com.fasterxml.jackson.annotation.JsonBackReference;
 import jakarta.persistence.*;
 import lombok.Data;
 import org.hibernate.annotations.CreationTimestamp;
@@ -31,6 +32,7 @@ public class Product {
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "category_id")
+    @JsonBackReference
     private Category category;
 
     @Column
@@ -44,6 +46,10 @@ public class Product {
 
     @CreationTimestamp
     private Date created;
+
+    @ManyToOne
+    @JoinColumn(name = "market_id")
+    private Market market;
 
     // Constructors
     public Product() {}

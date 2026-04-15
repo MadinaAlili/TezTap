@@ -2,12 +2,14 @@ package com.teztap.model;
 
 import jakarta.persistence.*;
 import lombok.Data;
+import lombok.experimental.Accessors;
 
 import java.math.BigDecimal;
 
 @Entity
 @Data
 @Table(name = "order_items")
+@Accessors(chain = true)
 public class OrderItem {
 
     @Id

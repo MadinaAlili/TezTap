@@ -1,5 +1,5 @@
 package com.teztap.dto;
 
-import com.teztap.model.OrderStatus;
+import com.teztap.model.Order;
 
-public record UpdateOrderStatusRequest(OrderStatus status) {}
+public record UpdateOrderStatusRequest(Order.OrderStatus status) {}

@@ -5,7 +5,6 @@ import lombok.Data;
 import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
 
-import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
@@ -30,8 +29,16 @@ public class Order {
     @Column(nullable = false)
     private OrderStatus status = OrderStatus.PENDING;
 
-    @Column(nullable = false)
-    private BigDecimal totalPrice;
+    @OneToOne(cascade = CascadeType.ALL)
+    @JoinColumn(name = "payment_id")
+    private Payment payment;
+
+    @Embedded
+    private Address orderAddress;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "market_branch_id")
+    private MarketBranch marketBranch;
 
     @CreationTimestamp
     private Date created;
@@ -39,4 +46,19 @@ public class Order {
     @UpdateTimestamp
     private Date updated;
 
+    @Column(columnDefinition = "text")
+    private String deliveryNote;
+
+    public enum OrderStatus {
+        PENDING,
+        AWAITING_PAYMENT,
+        PAID,
+        PAYMENT_FAILED,
+        WAITING_FOR_COURIER,
+        WAITING_FOR_SHIPMENT,
+        ON_THE_WAY,
+        SHIPPED,
+        DELIVERED,
+        CANCELLED
+    }
 }

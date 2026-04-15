@@ -2,6 +2,7 @@ package com.teztap.model;
 
 import jakarta.persistence.*;
 import lombok.Data;
+import lombok.RequiredArgsConstructor;
 import org.hibernate.annotations.CreationTimestamp;
 
 import java.time.LocalDateTime;
@@ -9,6 +10,7 @@ import java.time.LocalDateTime;
 @Entity
 @Table(name = "markets")
 @Data
+@RequiredArgsConstructor
 public class Market {
 
     @Id
@@ -22,17 +24,12 @@ public class Market {
     private String baseUrl;
 
     @Column(nullable = false)
+    private String categoryScrapingBaseUrl;
+
+    @Column(nullable = false)
     private Boolean active = true;
 
     @CreationTimestamp
     private LocalDateTime created;
-
-    // Constructors
-    public Market() {}
-
-    public Market(String name, String baseUrl) {
-        this.name = name;
-        this.baseUrl = baseUrl;
-    }
 
 }

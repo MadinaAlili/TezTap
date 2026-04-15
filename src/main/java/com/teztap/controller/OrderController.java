@@ -1,8 +1,10 @@
 package com.teztap.controller;
 
+import com.teztap.dto.OrderRequest;
 import com.teztap.dto.OrderResponse;
 import com.teztap.dto.UpdateOrderStatusRequest;
 import com.teztap.service.OrderService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -21,8 +23,9 @@ public class OrderController {
     // Any logged-in user can checkout
     @PostMapping("/checkout")
     @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<OrderResponse> checkout(Authentication auth) {
-        return ResponseEntity.ok(orderService.checkout(auth.getName()));
+    public ResponseEntity<OrderResponse> checkout(@Valid @RequestBody OrderRequest orderRequest, Authentication auth) {
+        // Pass savedAddress(is inside orderRequest) to your service to create the order
+        return ResponseEntity.ok(orderService.initiateOrder(auth.getName(), orderRequest));
     }
 
     // User sees their own orders

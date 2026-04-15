@@ -1,0 +1,209 @@
+#version: "3.9"
+services:
+  # ── Redis ──────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine          # alpine = ~30 MB image, much lighter than latest
+    container_name: redis
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "12"
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server
+      --maxmemory 64mb
+      --maxmemory-policy allkeys-lru
+      --save ""
+      --appendonly no
+    mem_limit: 100m
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - shared-net
+    # ── Kafka (KRaft mode, no ZooKeeper) ──────────────────────────────────────
+#  kafka:
+#    image: bitnamilegacy/kafka:latest       # pin a real version tag, never use :latest
+#    container_name: kafka
+#    restart: unless-stopped
+#    logging:
+#      driver: "json-file"
+#      options:
+#        max-size: "20m"
+#        max-file: "24"
+#    ports:
+#      - "9092:9092"
+#    environment:
+#      # KRaft settings
+#      - KAFKA_CFG_NODE_ID=1
+#      - KAFKA_CFG_PROCESS_ROLES=broker,controller
+#      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
+#
+#      # Listeners
+#      # INTERNAL  → used by your app container (Docker network)
+#      # CONTROLLER → used internally by KRaft
+##      - KAFKA_CFG_LISTENERS=INTERNAL://:9092,CONTROLLER://:9093
+##      - KAFKA_CFG_ADVERTISED_LISTENERS=INTERNAL://kafka:9092
+##      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+##      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=INTERNAL
+#      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
+#      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+#      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+#      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+#      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+#
+#      - KAFKA_LOG4J_ROOT_LOGLEVEL=ERROR
+#
+#      # Topic auto-creation
+#      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
+#      - KAFKA_CFG_NUM_PARTITIONS=1
+#      - KAFKA_CFG_DEFAULT_REPLICATION_FACTOR=1
+#
+#      # Aggressive memory limits — enough for a single-broker dev/prod setup
+#      - KAFKA_HEAP_OPTS=-Xmx256m -Xms128m
+#
+#      # Reduce log retention so disk doesn't fill up
+#      - KAFKA_CFG_LOG_RETENTION_HOURS=1
+#      - KAFKA_CFG_LOG_SEGMENT_BYTES=52428800   # 50 MB segments
+#
+#      - ALLOW_PLAINTEXT_LISTENER=yes
+#    mem_limit: 512m
+#    volumes:
+#      - kafka_data:/bitnamilegacy/kafka
+#    healthcheck:
+#      test: [ "CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1" ]
+#      interval: 15s
+#      timeout: 10s
+#      retries: 10
+#      start_period: 30s   # give Kafka time to start before health checks begin
+#    networks:
+#      - shared-net
+
+  kafka:
+    image: redpandadata/redpanda:v25.3.11
+    container_name: kafka
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "12"
+    ports:
+      - "9092:9092"   # Kafka-compatible API
+      - "9644:9644"   # Redpanda Admin API (optional, useful for health checks)
+    command:
+      - redpanda
+      - start
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://kafka:9092
+      - --overprovisioned
+      - --smp=1
+      - --memory=256M
+      - --reserve-memory=0M
+      - --node-id=0
+      - --check=false
+    environment:
+      - REDPANDA_LOG_LEVEL=error
+    mem_limit: 350m
+    volumes:
+      - kafka_data:/var/lib/redpanda/data
+    healthcheck:
+      test: [ "CMD-SHELL", "rpk cluster health --api-urls localhost:9644 || exit 1" ]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s   # Redpanda starts faster than Kafka
+    networks:
+      - shared-net
+
+  # ── Kafka topic initialiser (runs once, then exits) ───────────────────────
+  # Creates all required topics before the app starts.
+  # Using a separate init container is more reliable than KAFKA_CREATE_TOPICS
+  # because it retries until Kafka is actually ready.
+#  kafka-init:
+#    image: bitnamilegacy/kafka:latest
+#    container_name: kafka-init
+#    depends_on:
+#      kafka:
+#        condition: service_healthy
+#    entrypoint: [ "/bin/bash", "-c" ]
+#    command: |
+#      "
+#      echo 'Creating Kafka topics...'
+#      kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic delivery-started          --partitions 1 --replication-factor 1
+#      kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic order-courier-assigned    --partitions 1 --replication-factor 1
+#      kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic order-created             --partitions 1 --replication-factor 1
+#      kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic order-payment-completed   --partitions 1 --replication-factor 1
+#      kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic order-payment-failed      --partitions 1 --replication-factor 1
+#      echo 'Topics created successfully.'
+#      kafka-topics.sh --bootstrap-server kafka:9092 --list
+#      "
+#    restart: "no"   # init containers must not restart
+#    networks:
+#      - shared-net
+
+    # ── Selenium (single Chrome session) ──────────────────────────────────────
+#  selenium:
+#    image: selenium/standalone-chrome:nightly
+#    container_name: selenium
+#    shm_size: "1g"
+#    logging:
+#      driver: "json-file"
+#      options:
+#        max-size: "20m"
+#        max-file: "24"
+#    ports:
+#      - "4444:4444"
+#    restart: unless-stopped
+#    mem_limit: 512m
+#    healthcheck:
+#      test: [ "CMD", "curl", "-f", "http://localhost:4444/wd/hub/status || exit 1" ]
+#      interval: 10s
+#      retries: 5
+#    networks:
+#      - shared-net
+
+  # ── Spring Boot application ────────────────────────────────────────────────
+  app:
+    build: .
+    container_name: sdp-app
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "12"
+    ports:
+      - "5000:5000"
+    depends_on:
+      kafka:
+        condition: service_started
+      redis:
+        condition: service_healthy
+#      kafka-init:
+#        condition: service_completed_successfully
+    env_file:
+      - .env
+    environment:
+      # Override bootstrap server so the app uses the Docker-internal listener
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - SPRING_DATA_REDIS_HOST=redis
+      - SPRING_DATA_REDIS_PORT=6379
+      # Keep JVM heap tight so the container doesn't OOM
+#      - JAVA_OPTS=-Xmx300m -Xms300m -XX:MaxMetaspaceSize=128m -XX:+UseContainerSupport
+#    mem_limit: 850m
+    networks:
+      - shared-net
+
+networks:
+  shared-net:
+    external: true
+
+volumes:
+  kafka_data:
+    driver: local

@@ -49,10 +49,10 @@ public class AuthService {
             roles.add(findRole(Role.RoleName.ROLE_USER));
         } else {
             req.roles().forEach(r -> {
-                switch (r.toLowerCase()) {
-                    case "admin" -> roles.add(findRole(Role.RoleName.ROLE_ADMIN));
-                    case "moderator" -> roles.add(findRole(Role.RoleName.ROLE_MODERATOR));
-                    default -> roles.add(findRole(Role.RoleName.ROLE_USER));
+                try {
+                    roles.add(findRole(Role.RoleName.valueOf(r.toUpperCase())));
+                }catch (IllegalArgumentException e){
+                    roles.add(findRole(Role.RoleName.ROLE_USER));
                 }
             });
         }
@@ -67,7 +67,7 @@ public class AuthService {
                 new UsernamePasswordAuthenticationToken(req.username(), req.password()));
 
         SecurityContextHolder.getContext().setAuthentication(auth);
-        String token = jwtUtils.generateToken(req.username());
+        String token = jwtUtils.generateToken(auth);
 
         UserDetails userDetails = (UserDetails) auth.getPrincipal();
         assert userDetails != null;

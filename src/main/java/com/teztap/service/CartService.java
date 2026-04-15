@@ -88,6 +88,10 @@ public class CartService {
         cartItemRepository.deleteByUser(user);
     }
 
+    public List<CartItem> getCartItems(User user) {
+        return cartItemRepository.findByUser(user);
+    }
+
     private CartItemResponse toResponse(CartItem item) {
         Product p = item.getProduct();
         BigDecimal effectivePrice = p.getDiscountPrice() != null ? p.getDiscountPrice() : p.getOriginalPrice();

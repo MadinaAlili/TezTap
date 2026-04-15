@@ -1,7 +1,9 @@
 package com.teztap.model;
 
+import com.fasterxml.jackson.annotation.JsonManagedReference;
 import jakarta.persistence.*;
 import lombok.Data;
+import lombok.ToString;
 import org.hibernate.annotations.CreationTimestamp;
 
 import java.sql.Date;
@@ -25,7 +27,13 @@ public class Category {
 //    @ManyToOne
 //    private Category parent;
 
+    @ManyToOne
+    @JoinColumn(name = "market_id")
+    private Market market;
+
     @OneToMany(mappedBy = "category")
+    @JsonManagedReference
+    @ToString.Exclude
     private List<Product> products;
 
     @CreationTimestamp
