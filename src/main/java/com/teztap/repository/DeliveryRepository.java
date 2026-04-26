@@ -8,8 +8,9 @@ import org.springframework.data.repository.query.Param;
 import java.util.Optional;
 
 public interface DeliveryRepository extends JpaRepository<Delivery, Long> {
-    boolean existsByOrderId(Long orderId);
 
-    @Query("SELECT d.order.user.username FROM Delivery d WHERE d.id = :deliveryId")
-    Optional<String> findCustomerUsernameByDeliveryId(@Param("deliveryId") Long deliveryId);
+    @Query("SELECT d.subOrder.parentOrder.user.username FROM Delivery d WHERE d.id = :deliveryId")
+    String findCustomerUsernameByDeliveryId(@Param("deliveryId") Long deliveryId);
+
+    boolean existsBySubOrderId(Long subOrderId);
 }

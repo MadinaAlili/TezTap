@@ -2,7 +2,7 @@ package com.teztap.dto;
 
 import java.math.BigDecimal;
 
-public record ProductDTO(
+public record ProductDto(
         Long id,
         String name,
         BigDecimal originalPrice,

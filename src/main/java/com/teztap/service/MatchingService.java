@@ -4,6 +4,7 @@ import com.teztap.controller.websocket.WebSocketRoutes;
 import com.teztap.dto.DeliveryOfferRequest;
 import com.teztap.dto.MatchingState;
 import com.teztap.kafka.EventPublisher;
+import com.teztap.kafka.kafkaEventDto.CourierNotFoundEvent;
 import com.teztap.kafka.kafkaEventDto.DeliveryStartedEvent;
 import com.teztap.kafka.kafkaEventDto.OrderCourierAssignedEvent;
 import com.teztap.model.Delivery;
@@ -50,7 +51,7 @@ public class MatchingService {
     private final Map<Long, ScheduledFuture<?>> timeouts = new ConcurrentHashMap<>();
 
 
-    @KafkaListener(topics = "delivery-started")
+    @KafkaListener(topics = "delivery-started", groupId = "67125")
     public void startMatching(DeliveryStartedEvent event) {
         Delivery delivery = deliveryRepository.findById(event.deliveryId()).orElseThrow();
         // store empty state (no couriers offered yet)
@@ -116,9 +117,18 @@ public class MatchingService {
                 .toList();
 
         if (candidates.isEmpty()) {
-            throw new IllegalStateException("===============No available couriers found===============");
-            // implement no courier available strategy
-//            return; // no more couriers
+            // No couriers available - cleanup and publish event once
+            System.err.println("===============No available couriers found===============");
+
+            // Cancel any pending timeouts
+            cancelTimeout(deliveryId);
+
+            // Clear the matching state from Redis to prevent retries
+            cleanupMatchingState(deliveryId);
+
+            // Publish the event ONCE and return gracefully
+            eventPublisher.publish(new CourierNotFoundEvent(deliveryId));
+            return;
         }
 
         String courierUsername = candidates.get(0);
@@ -172,9 +182,16 @@ public class MatchingService {
         }
     }
 
+    private void cleanupMatchingState(Long deliveryId) {
+        redisTemplate.delete("match:" + deliveryId);
+    }
+
     public void acceptOrder(Long deliveryId, String courierUsername) {
         // stop timeout
         cancelTimeout(deliveryId);
+
+        // cleanup matching state since match is complete
+        cleanupMatchingState(deliveryId);
 
         // send courier assigned event
         eventPublisher.publish(new OrderCourierAssignedEvent(deliveryId, courierUsername));

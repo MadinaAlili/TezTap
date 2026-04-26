@@ -1,5 +1,6 @@
 package com.teztap.repository;
 
+import com.teztap.model.Market;
 import com.teztap.model.Product;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -16,6 +17,10 @@ import java.util.Optional;
 @Repository
 public interface ProductRepository extends JpaRepository<Product, Long> {
     Optional<Product> findByLink(String link);
+
+    Optional<Product> findByNameAndMarket(String name, Market market);
+
+    List<Product> findAllByMarketAndNameIn(Market market, Collection<String> names);
 
     @Query("SELECT p FROM Product p WHERE p.id IN :ids")
     List<Product> findAllByIds(@Param("ids") List<Long> ids);
@@ -36,4 +41,44 @@ public interface ProductRepository extends JpaRepository<Product, Long> {
     Page<Product> findByNameContainingIgnoreCase(String keyword, Pageable pageable);
 
     List<Product> findAllByLinkIn(Collection<String> links);
+
+    // For Endpoint #5: Find products by category name
+    Page<Product> findByCategoryNameIgnoreCase(String categoryName, Pageable pageable);
+
+    // For Endpoint #6: Count total products for a specific category
+    long countByCategoryId(Long categoryId);
+
+    @Query(
+            value = """
+            SELECT * FROM products p 
+            WHERE p.id != :sourceId 
+            AND similarity(p.name, :sourceName) > :threshold 
+            ORDER BY similarity(p.name, :sourceName) DESC
+            """,
+            countQuery = """
+            SELECT count(*) FROM products p 
+            WHERE p.id != :sourceId 
+            AND similarity(p.name, :sourceName) > :threshold
+            """,
+            nativeQuery = true
+    )
+    Page<Product> findSimilarProducts(
+            @Param("sourceName") String sourceName,
+            @Param("sourceId") Long sourceId,
+            @Param("threshold") double threshold,
+            Pageable pageable
+    );
+
+    @Query("SELECT p FROM Product p WHERE " +
+            "(:keyword IS NULL OR LOWER(p.name) LIKE LOWER(CONCAT('%', CAST(:keyword AS string), '%'))) AND " +
+            "(:marketName IS NULL OR LOWER(p.market.name) = LOWER(CAST(:marketName AS string))) AND " +
+            "(:categoryId IS NULL OR p.category.id = :categoryId) AND " +
+            "(:onlyDiscounted = false OR (p.discountPercentage IS NOT NULL AND p.discountPercentage > 0))")
+    Page<Product> findWithDynamicFilters(
+            @Param("keyword") String keyword,
+            @Param("marketName") String marketName,
+            @Param("categoryId") Long categoryId,
+            @Param("onlyDiscounted") boolean onlyDiscounted,
+            Pageable pageable
+    );
 }

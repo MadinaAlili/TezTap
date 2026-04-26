@@ -3,6 +3,7 @@ package com.teztap.service;
 import com.google.maps.GeoApiContext;
 import com.google.maps.PlaceDetailsRequest;
 import com.google.maps.PlacesApi;
+import com.google.maps.model.LatLng;
 import com.google.maps.model.PlaceDetails;
 import com.google.maps.model.PlacesSearchResponse;
 import com.google.maps.model.PlacesSearchResult;
@@ -46,7 +47,28 @@ public class MarketSynchronizationService {
     @Value("${app.markets.export.enabled:true}")
     private boolean exportEnabled;
 
-    // 1. NON-BLOCKING STARTUP
+    // Baku city center — used as location bias anchor
+    private static final LatLng BAKU_CENTER = new LatLng(40.4093, 49.8671);
+
+    // ~150 km radius covers all of Azerbaijan
+    private static final int AZERBAIJAN_RADIUS_METERS = 50_000;
+
+    // Ordered list of all markets to sync: [DB enum name, human query term]
+    private static final List<String[]> MARKETS = List.of(
+            new String[]{"ARAZ",       "Araz market"},
+            new String[]{"BAZARSTORE", "Bazarstore market"},
+            new String[]{"NEPTUN",     "Neptun market"},
+            new String[]{"ALMARKET",   "Almarket market"},
+            new String[]{"OMID",       "Omid market"},
+            new String[]{"APLUS",      "Aplus market"},
+            new String[]{"TAMSTORE",   "Tamstore market"},
+            new String[]{"RAHAT",      "Rahat market"}
+    );
+
+    // -------------------------------------------------------------------------
+    // Startup
+    // -------------------------------------------------------------------------
+
     @EventListener(ApplicationReadyEvent.class)
     public void onApplicationStartup() {
         if (!syncEnabled) {
@@ -62,8 +84,6 @@ public class MarketSynchronizationService {
 
         log.info("Kicking off Google Maps synchronization in the background...");
 
-        // CompletableFuture runs this in a separate thread pool.
-        // Your Spring Boot app immediately finishes starting up and becomes healthy/ready.
         CompletableFuture.runAsync(this::executeSynchronization)
                 .exceptionally(ex -> {
                     log.error("Fatal error during background synchronization", ex);
@@ -71,47 +91,60 @@ public class MarketSynchronizationService {
                 });
     }
 
-    // 2. NO TOP-LEVEL @Transactional
+    // -------------------------------------------------------------------------
+    // Orchestration
+    // -------------------------------------------------------------------------
+
     private void executeSynchronization() {
-        try{
-        Market arazMarket = marketRepository.findByName("ARAZ").get();
-        fetchAndSaveBranches("Araz market", arazMarket);
-        }catch(Exception e){
-            System.err.println("[MarketSynchronizationService] Araz market google maps search or db fetch failed");
-        }
-        try{
-            Market bazarstoreMarket = marketRepository.findByName("BAZARSTORE").get();
-            fetchAndSaveBranches("Bazarstore market", bazarstoreMarket);
-        }catch(Exception e){
-            System.err.println("[MarketSynchronizationService] Bazarstore market google maps search or db fetch failed");
-        }
-        try{
-            Market neptunMarket = marketRepository.findByName("NEPTUN").get();
-            fetchAndSaveBranches("Neptun market", neptunMarket);
-        }catch(Exception e){
-            System.err.println("[MarketSynchronizationService] Neptun market google maps search or db fetch failed");
+        for (String[] entry : MARKETS) {
+            String dbName    = entry[0];
+            String queryTerm = entry[1];
+
+            try {
+                Market market = marketRepository.findByName(dbName).get();
+                // Append "Azerbaijan" so the text query itself is geo-scoped,
+                // combined with location bias below for double filtering.
+                fetchAndSaveBranches(queryTerm + " Azerbaijan", market);
+            } catch (Exception e) {
+                log.error("[MarketSync] {} market sync failed: {}", dbName, e.getMessage());
+            }
         }
 
         if (exportEnabled) exportBranchesToJson();
     }
 
+    // -------------------------------------------------------------------------
+    // Fetch & persist
+    // -------------------------------------------------------------------------
+
     private void fetchAndSaveBranches(String query, Market market) {
-        // Configure retry behavior within the Google Client itself
         GeoApiContext context = new GeoApiContext.Builder()
                 .apiKey(apiKey)
-                .maxRetries(3) // Robustness: Auto-retry on network blips
+                .maxRetries(3)
                 .build();
 
         try {
-            PlacesSearchResponse response = PlacesApi.textSearchQuery(context, query).await();
+            PlacesSearchResponse response = PlacesApi
+                    .textSearchQuery(context, query)
+                    // Location bias: ranks results within this radius higher.
+                    // Combined with the "Azerbaijan" query term this is very tight.
+                    .location(BAKU_CENTER)
+                    .radius(AZERBAIJAN_RADIUS_METERS)
+                    .await();
 
             for (PlacesSearchResult result : response.results) {
                 if (branchRepository.existsByGooglePlaceId(result.placeId)) continue;
 
+                // Pre-filter using the lightweight search result's vicinity
+                // BEFORE spending a quota-expensive PlaceDetails API call.
+                if (!isSearchResultInAzerbaijan(result)) {
+                    log.warn("Skipping out-of-country search result: {} ({})",
+                            result.name, result.vicinity);
+                    continue;
+                }
+
                 try {
-                    // 3. RATE LIMITING PROTECTION
-                    // A 200ms pause prevents slamming Google's API and getting blocked
-                    Thread.sleep(200);
+                    Thread.sleep(200); // Respect Google rate limits
 
                     PlaceDetails details = PlacesApi.placeDetails(context, result.placeId)
                             .fields(
@@ -129,24 +162,36 @@ public class MarketSynchronizationService {
                     saveSingleBranch(details, market);
 
                 } catch (Exception e) {
-                    // If one specific branch fails, log it and move to the next.
-                    // DO NOT crash the entire loop.
                     log.error("Failed to process placeId {}: {}", result.placeId, e.getMessage());
                 }
             }
         } catch (Exception e) {
-            log.error("Failed to execute Maps Search Query: ", e);
+            log.error("Failed to execute Maps Search Query '{}': ", query, e);
         } finally {
             context.shutdown();
         }
     }
 
+    /**
+     * Pre-filter on the lightweight search result (no extra API call needed).
+     * PlacesSearchResult.vicinity is a short address like "Baku, Azerbaijan".
+     * If vicinity is null we give the benefit of the doubt and let the
+     * PlaceDetails formatted address be the final word.
+     */
+    private boolean isSearchResultInAzerbaijan(PlacesSearchResult result) {
+        if (result.vicinity == null) return true;
+        String v = result.vicinity.toLowerCase();
+        return v.contains("azerbaijan") || v.contains("azərbaycan");
+    }
+
+    // -------------------------------------------------------------------------
+    // Entity mapping
+    // -------------------------------------------------------------------------
+
     private void saveSingleBranch(PlaceDetails details, Market market) {
         MarketBranch branch = new MarketBranch();
         branch.setMarket(market);
         branch.setGooglePlaceId(details.placeId);
-
-        // 4. NULL SAFETY (Defensive Programming)
         branch.setName(details.name != null ? details.name : "Unknown Branch");
         branch.setPhoneNumber(details.formattedPhoneNumber);
         branch.setDescription(details.businessStatus != null ? details.businessStatus : "Operational");
@@ -160,8 +205,6 @@ public class MarketSynchronizationService {
                     BigDecimal.valueOf(details.geometry.location.lat)
             ));
         } else {
-            // If Google returns no coordinates, we cannot use this for delivery. Throwing an
-            // exception here skips this branch but keeps the loop running.
             throw new IllegalStateException("Place has no geographic coordinates");
         }
 
@@ -170,7 +213,6 @@ public class MarketSynchronizationService {
 
         mapOpeningHours(details, branch);
 
-        // The save method handles its own microtransaction automatically.
         branchRepository.save(branch);
         log.info("Saved new branch: {}", branch.getName());
     }
@@ -199,10 +241,8 @@ public class MarketSynchronizationService {
         for (var period : details.openingHours.periods) {
             if (period.open != null && period.close != null) {
                 DayOfWeek day = mapGoogleDayToJavaDay(period.open.day);
-
-                String openTime = period.open.time.format(timeFormatter);
+                String openTime  = period.open.time.format(timeFormatter);
                 String closeTime = period.close.time.format(timeFormatter);
-
                 schedule.computeIfAbsent(day, k -> new ArrayList<>())
                         .add(new TimeRange(openTime, closeTime));
             }
@@ -210,33 +250,36 @@ public class MarketSynchronizationService {
         branch.setOpeningHours(schedule);
     }
 
-    private DayOfWeek mapGoogleDayToJavaDay(com.google.maps.model.OpeningHours.Period.OpenClose.DayOfWeek googleDay) {
+    private DayOfWeek mapGoogleDayToJavaDay(
+            com.google.maps.model.OpeningHours.Period.OpenClose.DayOfWeek googleDay) {
         return switch (googleDay) {
-            case SUNDAY -> DayOfWeek.SUNDAY;
-            case MONDAY -> DayOfWeek.MONDAY;
-            case TUESDAY -> DayOfWeek.TUESDAY;
+            case SUNDAY    -> DayOfWeek.SUNDAY;
+            case MONDAY    -> DayOfWeek.MONDAY;
+            case TUESDAY   -> DayOfWeek.TUESDAY;
             case WEDNESDAY -> DayOfWeek.WEDNESDAY;
-            case THURSDAY -> DayOfWeek.THURSDAY;
-            case FRIDAY -> DayOfWeek.FRIDAY;
-            case SATURDAY -> DayOfWeek.SATURDAY;
-            case UNKNOWN -> DayOfWeek.MONDAY;
+            case THURSDAY  -> DayOfWeek.THURSDAY;
+            case FRIDAY    -> DayOfWeek.FRIDAY;
+            case SATURDAY  -> DayOfWeek.SATURDAY;
+            case UNKNOWN   -> DayOfWeek.MONDAY;
         };
     }
+
+    // -------------------------------------------------------------------------
+    // Export
+    // -------------------------------------------------------------------------
 
     private void exportBranchesToJson() {
         log.info("Starting export of MarketBranches to JSON...");
         List<MarketBranch> allBranches = branchRepository.findAll();
         try {
-            // 1. Use the Jackson 3 Builder to create the ObjectMapper
             ObjectMapper mapper = JsonMapper.builder()
-                    .findAndAddModules() // 2. This replaces findAndRegisterModules()
-                    .build();            // 3. Lock it down to an immutable mapper
+                    .findAndAddModules()
+                    .build();
 
             File outputFile = new File("market_branches_export.json");
-
-            // 4. writerWithDefaultPrettyPrinter() still exists in Jackson 3 and works perfectly
             mapper.writerWithDefaultPrettyPrinter().writeValue(outputFile, allBranches);
-            log.info("Successfully exported {} branches to {}", allBranches.size(), outputFile.getAbsolutePath());
+            log.info("Successfully exported {} branches to {}",
+                    allBranches.size(), outputFile.getAbsolutePath());
         } catch (Exception e) {
             log.error("Failed to export branches to JSON", e);
         }

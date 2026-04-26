@@ -3,7 +3,9 @@ package com.teztap.service;
 import com.teztap.dto.AddToCartRequest;
 import com.teztap.dto.CartItemResponse;
 import com.teztap.dto.CartResponse;
+import com.teztap.dto.MarketCartResponse;
 import com.teztap.model.CartItem;
+import com.teztap.model.Market;
 import com.teztap.model.Product;
 import com.teztap.model.User;
 import com.teztap.repository.CartItemRepository;
@@ -11,9 +13,13 @@ import com.teztap.repository.ProductRepository;
 import com.teztap.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -31,11 +37,43 @@ public class CartService {
     public CartResponse getCart(String username) {
         User user = getUser(username);
         List<CartItem> items = cartItemRepository.findByUser(user);
-        List<CartItemResponse> responses = items.stream().map(this::toResponse).toList();
-        BigDecimal total = responses.stream()
-                .map(CartItemResponse::subtotal)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-        return new CartResponse(responses, total);
+
+        // 1. Group the cart items by their Product's Market
+        Map<Market, List<CartItem>> groupedItems = items.stream()
+                .collect(Collectors.groupingBy(item -> item.getProduct().getMarket()));
+
+        List<MarketCartResponse> marketResponses = new ArrayList<>();
+        BigDecimal grandTotal = BigDecimal.ZERO;
+
+        // 2. Process each market group
+        for (Map.Entry<Market, List<CartItem>> entry : groupedItems.entrySet()) {
+            Market market = entry.getKey();
+            List<CartItem> marketItems = entry.getValue();
+
+            // Convert items to DTOs
+            List<CartItemResponse> itemResponses = marketItems.stream()
+                    .map(this::toResponse)
+                    .toList();
+
+            // Calculate subtotal for just this market
+            BigDecimal marketTotal = itemResponses.stream()
+                    .map(CartItemResponse::subtotal)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+            // Build the market group
+            marketResponses.add(new MarketCartResponse(
+                    market.getId(),
+                    market.getName(),
+                    itemResponses,
+                    marketTotal
+            ));
+
+            // Add to the overall cart grand total
+            grandTotal = grandTotal.add(marketTotal);
+        }
+
+        // 3. Return the newly structured response
+        return new CartResponse(marketResponses, grandTotal);
     }
 
     public CartResponse addToCart(String username, AddToCartRequest req) {
@@ -101,5 +139,11 @@ public class CartService {
                 p.getOriginalPrice(), p.getDiscountPrice(),
                 item.getQuantity(), subtotal
         );
+    }
+
+    @Transactional
+    public void removeSelectedCartItems(String username, List<Long> cartItemIds) {
+        User user = getUser(username);
+        cartItemRepository.deleteByIdInAndUser(cartItemIds, user);
     }
 }

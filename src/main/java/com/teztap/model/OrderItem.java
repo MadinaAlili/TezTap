@@ -17,12 +17,16 @@ public class OrderItem {
     private Long id;
 
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "order_id", nullable = false)
-    private Order order;
+    @JoinColumn(name = "sub_order_id", nullable = false)
+    private SubOrder subOrder;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "product_id", nullable = false)
     private Product product;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "market_branch_id")
+    private MarketBranch marketBranch;
 
     @Column(nullable = false)
     private Integer quantity;

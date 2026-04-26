@@ -1,10 +1,12 @@
 package com.teztap.service.scraper;
 
-import com.teztap.dto.ProductDTO;
+import com.teztap.dto.ProductDto;
 import com.teztap.kafka.EventPublisher;
 import com.teztap.kafka.kafkaEventDto.ProductCreatedEvent;
 import com.teztap.model.Category;
 import com.teztap.model.Product;
+import com.teztap.repository.ProductRepository;
+import com.teztap.service.ProductSearchService;
 import com.teztap.service.scraper.araz.ArazCategoryScraper;
 import com.teztap.service.scraper.araz.ArazProductScraper;
 import com.teztap.service.scraper.bazarstore.BazarstoreCategoryScraper;
@@ -13,6 +15,7 @@ import com.teztap.service.scraper.neptun.NeptunCategoryScraper;
 import com.teztap.service.scraper.neptun.NeptunProductScraper;
 import com.teztap.service.scraper.omid.OmidCategoryScraper;
 import com.teztap.service.scraper.omid.OmidProductScraper;
+import com.teztap.service.scraper.pdfExtractor.CatalogueScraperOrchestrator;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,63 +32,69 @@ public class ScraperRunnerService {
     private static final Logger log = LoggerFactory.getLogger(ScraperRunnerService.class);
 
     private final NeptunCategoryScraper neptunCategoryScraper;
-    private final NeptunProductScraper  neptunProductScraper;
-    private final ArazCategoryScraper   arazCategoryScraper;
-    private final ArazProductScraper    arazProductScraper;
+    private final NeptunProductScraper neptunProductScraper;
+    private final ArazCategoryScraper arazCategoryScraper;
+    private final ArazProductScraper arazProductScraper;
     private final BazarstoreCategoryScraper bazarstoreCategoryScraper;
     private final BazarstoreProductScraper bazarstoreProductScraper;
     private final OmidCategoryScraper omidCategoryScraper;
     private final OmidProductScraper omidProductScraper;
 
     private final EventPublisher eventPublisher;
+    private final ProductRepository productRepository;
+    private final ProductSearchService productSearchService;
+    private final CatalogueScraperOrchestrator catalogueScraper;
 
     /**
      * WHY fixedDelay instead of fixedRate:
-     *
-     *   fixedRate fires every N ms regardless of whether the previous run finished.
-     *   On a limited EC2, if a scrape cycle takes 4 hours and the rate is 2 hours,
-     *   two Chromium instances run simultaneously → OOM kill.
-     *
-     *   fixedDelay starts the NEXT run only AFTER the current one fully completes.
-     *   This guarantees one Chromium instance at a time, no matter how slow the run is.
-     *
+     * <p>
+     * fixedRate fires every N ms regardless of whether the previous run finished.
+     * On a limited EC2, if a scrape cycle takes 4 hours and the rate is 2 hours,
+     * two Chromium instances run simultaneously → OOM kill.
+     * <p>
+     * fixedDelay starts the NEXT run only AFTER the current one fully completes.
+     * This guarantees one Chromium instance at a time, no matter how slow the run is.
+     * <p>
      * WHY no @Async here:
      *
-     *   @Scheduled already runs in its own thread from the task scheduler pool.
-     *   Adding @Async on the same method causes Spring's proxy to attempt double-wrapping,
-     *   which silently breaks one or both annotations depending on proxy order.
-     *   Remove @Async — the schedule runs off the main thread already.
+     * @Scheduled already runs in its own thread from the task scheduler pool.
+     * Adding @Async on the same method causes Spring's proxy to attempt double-wrapping,
+     * which silently breaks one or both annotations depending on proxy order.
+     * Remove @Async — the schedule runs off the main thread already.
      */
     @Scheduled(initialDelay = 15_000, fixedDelay = 3600 * 24 * 1_000L) // 24 hours between runs
     public void runScrapers() {
         log.info("========== Scrape cycle starting ==========");
 
-//        runMarket("BAZARSTORE",
-//                () -> bazarstoreCategoryScraper.scrape("https://bazarstore.az"),
-//                bazarstoreProductScraper);
-//
-//        runMarket("NEPTUN",
-//                () -> neptunCategoryScraper.scrape("https://neptun.az"),
-//                neptunProductScraper);
-//
-//        runMarket("ARAZ",
-//                () -> arazCategoryScraper.scrape("https://www.arazmarket.az/az"),
-//                arazProductScraper);
+        runMarket("NEPTUN",
+                () -> neptunCategoryScraper.scrape("https://neptun.az"),
+                neptunProductScraper);
 
-//        runMarket("OMID",
-//                () -> omidCategoryScraper.scrape("https://omid.az"),
-//                omidProductScraper);
+        runMarket("BAZARSTORE",
+                () -> bazarstoreCategoryScraper.scrape("https://bazarstore.az"),
+                bazarstoreProductScraper);
+
+        runMarket("ARAZ",
+                () -> arazCategoryScraper.scrape("https://www.arazmarket.az/az"),
+                arazProductScraper);
+
+        runMarket("OMID",
+                () -> omidCategoryScraper.scrape("https://omid.az"),
+                omidProductScraper);
 
         log.info("========== Scrape cycle complete ==========");
+
+        log.info("========== Scrape PDFs ==========");
+        catalogueScraper.runAll();
     }
 
     /**
      * Runs a full market scrape — categories first, then products per category.
-     *
+     * <p>
      * Each market is fully isolated:
-     *   - A crash inside one market never affects other markets.
-     *   - A crash on one category's products never stops the remaining categories.
-     *   - Kafka publish failures are logged but do not abort the scrape.
+     * - A crash inside one market never affects other markets.
+     * - A crash on one category's products never stops the remaining categories.
+     * - Kafka publish failures are logged but do not abort the scrape.
      */
     private void runMarket(String marketName,
                            Supplier<List<Category>> categoryScraper,
@@ -139,12 +148,12 @@ public class ScraperRunnerService {
 
     // ── DTO mapping ───────────────────────────────────────────────────────────
 
-    private List<ProductDTO> toDTO(List<Product> products) {
+    private List<ProductDto> toDTO(List<Product> products) {
         return products.stream().map(this::toDTO).toList();
     }
 
-    private ProductDTO toDTO(Product p) {
-        return new ProductDTO(
+    private ProductDto toDTO(Product p) {
+        return new ProductDto(
                 p.getId(),
                 p.getName(),
                 p.getOriginalPrice(),
@@ -153,7 +162,7 @@ public class ScraperRunnerService {
                 p.getLink(),
                 p.getImageUrl(),
                 p.getCategory() != null ? p.getCategory().getId() : null,
-                p.getMarket()   != null ? p.getMarket().getId()   : null
+                p.getMarket() != null ? p.getMarket().getId() : null
         );
     }
 }

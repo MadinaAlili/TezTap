@@ -16,7 +16,7 @@ public class OrderCreatedConsumer {
     private final CartService cartService;
     private final PaymentService paymentService;
 
-    @KafkaListener(topics = "order-created", groupId = "order-created-group")
+    @KafkaListener(topics = "order-created", groupId = "81275")
     public void consume(OrderCreatedEvent event) {
         // initiate order function in orderService directly creates payment url and response that back, this event is ignored for now
     }

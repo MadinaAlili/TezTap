@@ -43,7 +43,9 @@ public class PlaywrightManager {
                                 "--disable-background-networking",
                                 "--disable-sync",
                                 "--mute-audio",
-                                "--window-size=1280,800"
+                                "--window-size=1280,800",
+                                "--disable-default-apps",
+                                "--js-flags=--max-old-space-size=256"
                         ))
         );
         log.info("[Playwright] Browser ready.");

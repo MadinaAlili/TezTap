@@ -41,6 +41,8 @@ public class AuthService {
         User user = new User();
         user.setUsername(req.username());
         user.setEmail(req.email());
+        user.setFullName(req.fullName());
+        user.setPhoneNumber(req.phoneNumber());
         user.setPassword(passwordEncoder.encode(req.password()));
 
         Set<Role> roles = new HashSet<>();

@@ -2,24 +2,32 @@ package com.teztap.model;
 
 import jakarta.persistence.*;
 import lombok.Data;
+import lombok.Getter;
 import lombok.RequiredArgsConstructor;
+import lombok.Setter;
+import lombok.experimental.Accessors;
 import org.locationtech.jts.geom.LineString;
 
 import java.time.LocalDateTime;
 
 @Entity
-@Data
-@RequiredArgsConstructor
+@Table(name = "deliveries")
+@Getter
+@Setter
+@Accessors(chain = true)
 public class Delivery {
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @OneToOne
-    @JoinColumn(name = "order_id", referencedColumnName = "id")
-    private Order order;
+    // 🚨 ARCHITECTURE FIX: Now points to the specific branch's portion of the order
+    @OneToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "sub_order_id", referencedColumnName = "id", nullable = false)
+    private SubOrder subOrder;
 
-    @OneToOne
+    // 🚨 CARDINALITY FIX: A courier can do many deliveries
+    @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "courier_id", referencedColumnName = "id")
     private Courier courier;
 
@@ -29,7 +37,7 @@ public class Delivery {
 
     private boolean delivered;
 
-    @Column
+    @Column(columnDefinition = "text")
     private String note;
 
     @Column

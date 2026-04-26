@@ -1,6 +1,8 @@
 package com.teztap.controller.websocket;
 
+import com.teztap.dto.DeliveryFinishedResponse;
 import com.teztap.dto.DeliveryOfferResponse;
+import com.teztap.service.DeliveryService;
 import com.teztap.service.MatchingService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.messaging.handler.annotation.MessageMapping;
@@ -13,6 +15,7 @@ import java.security.Principal;
 public class CourierSocket {
 
     private final MatchingService matchingService;
+    private final DeliveryService deliveryService;
 
     // Courier sends accept/reject
     @MessageMapping(WebSocketRoutes.INBOUND_DELIVERY_OFFER_RESPONSE)
@@ -23,5 +26,12 @@ public class CourierSocket {
             matchingService.acceptOrder(response.deliveryId(), courierUsername);
         else
             matchingService.rejectOrder(response.deliveryId(), courierUsername);
+    }
+
+    @MessageMapping(WebSocketRoutes.INBOUND_DELIVERY_FINISHED)
+    public void respondFinished(DeliveryFinishedResponse response, Principal principal) {
+        String courierUsername = principal.getName();
+
+        deliveryService.finishDelivery(response, courierUsername);
     }
 }

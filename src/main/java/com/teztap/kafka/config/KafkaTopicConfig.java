@@ -38,7 +38,14 @@ public class KafkaTopicConfig {
     }
 
     @Bean
-    public NewTopic productCreatedTopic() {
-        return new NewTopic("product-created", 3, (short) 1);
-    }
+    public NewTopic productCreatedTopic() { return new NewTopic("product-created", 3, (short) 1); }
+
+    @Bean
+    public NewTopic courierNotFoundTopic() { return new NewTopic("courier-not-found", 3, (short) 1); }
+
+    @Bean
+    public NewTopic orderDeliveredTopic() { return new NewTopic("order-delivered", 3, (short) 1); }
+
+    @Bean
+    public NewTopic subOrderRequiresCourierTopic() { return new NewTopic("suborder-requires-courier", 3, (short) 1); }
 }

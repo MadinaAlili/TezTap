@@ -11,7 +11,9 @@ import java.sql.Date;
 
 @Entity
 @Data
-@Table(name = "products")
+@Table(name = "products", uniqueConstraints = {
+        @UniqueConstraint(columnNames = {"name", "market_id"}) // Adjust "market_id" to match your actual column name
+})
 public class Product {
 
     @Id

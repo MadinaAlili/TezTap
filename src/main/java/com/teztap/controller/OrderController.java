@@ -1,8 +1,6 @@
 package com.teztap.controller;
 
-import com.teztap.dto.OrderRequest;
-import com.teztap.dto.OrderResponse;
-import com.teztap.dto.UpdateOrderStatusRequest;
+import com.teztap.dto.*;
 import com.teztap.service.OrderService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -58,5 +56,24 @@ public class OrderController {
             @PathVariable Long orderId,
             @RequestBody UpdateOrderStatusRequest req) {
         return ResponseEntity.ok(orderService.updateStatus(orderId, req));
+    }
+
+    @GetMapping("/{orderId}/items")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<List<SubOrderDto>> getOrderItems(@PathVariable Long orderId, Authentication auth) {
+        boolean isAdmin = auth.getAuthorities().stream()
+                .anyMatch(a -> a.getAuthority().equals("ROLE_ADMIN"));
+
+        return ResponseEntity.ok(orderService.getOrderItemsGroupedByBranch(auth.getName(), orderId, isAdmin));
+    }
+
+    // User can see their own order details, admin can see any
+    @GetMapping("/{orderId}/summary")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<OrderSummaryDto> getOrderSummary(@PathVariable Long orderId, Authentication auth) {
+        boolean isAdmin = auth.getAuthorities().stream()
+                .anyMatch(a -> a.getAuthority().equals("ROLE_ADMIN"));
+
+        return ResponseEntity.ok(orderService.getOrderSummary(auth.getName(), orderId, isAdmin));
     }
 }

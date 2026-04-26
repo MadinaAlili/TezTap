@@ -1,7 +1,7 @@
 package com.teztap.service;
 
 import com.teztap.dto.IndexResponse;
-import com.teztap.dto.ProductDTO;
+import com.teztap.dto.ProductDto;
 import com.teztap.dto.SearchResponse;
 import com.teztap.dto.TagResponse;
 import com.teztap.kafka.kafkaEventDto.ProductCreatedEvent;
@@ -15,6 +15,7 @@ import org.springframework.web.client.RestTemplate;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 
 @Service
 public class ProductSearchService {
@@ -23,17 +24,18 @@ public class ProductSearchService {
     @Value("${search.engine.url}")
     private String SEARCH_ENGINE_URL;
 
-    @KafkaListener(topics = "product-created", groupId = "product-created-group")
+    @KafkaListener(topics = "product-created")
     public IndexResponse indexProduct(ProductCreatedEvent event) {
         try{
-            return indexProduct(event.products());
+            indexProduct(event.products());
+            return null;
         }catch (Exception e){
             System.err.println("[ProductSearchService] Connection Failed with Product Search Service");
         }
         return null;
     }
 
-    public IndexResponse indexProduct(List<ProductDTO> products) throws ResourceAccessException {
+    public void indexProduct(List<ProductDto> products) throws ResourceAccessException {
         Map<String, Object> body = Map.of(
                 "products",
                 products.stream()
@@ -45,12 +47,22 @@ public class ProductSearchService {
                         .toList()
         );
 
-        ResponseEntity<IndexResponse> response = restTemplate.postForEntity(
-                SEARCH_ENGINE_URL+"/products/index",
-                body,
-                IndexResponse.class
-        );
-        return response.getBody();
+        CompletableFuture.runAsync(() -> {
+            try {
+                // We still make the call, but we don't care about saving the response
+                restTemplate.postForEntity(
+                        SEARCH_ENGINE_URL + "/products/index",
+                        body,
+                        String.class
+                );
+                System.out.println("Python successfully finished indexing batch!");
+            } catch (Exception e) {
+                // If Python crashes or times out, it won't crash your Kafka listener.
+                // It will just print this error to your console.
+                System.err.println("Background Python indexing failed: " + e.getMessage());
+            }
+        });
+//        return response.getBody();
     }
 
     public SearchResponse imageSearch(String base64, int top_k) {
@@ -81,8 +93,8 @@ public class ProductSearchService {
         return response.getBody();
     }
 
-    public ProductDTO toDTO(Product product) {
-        return new ProductDTO(
+    public ProductDto toDTO(Product product) {
+        return new ProductDto(
                 product.getId(),
                 product.getName(),
                 product.getOriginalPrice(),

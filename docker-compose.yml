@@ -169,15 +169,52 @@ services:
 #      - shared-net
 
   # ── Spring Boot application ────────────────────────────────────────────────
-  app:
+#  app:
+#    build: .
+#    container_name: sdp-app
+#    restart: unless-stopped
+#    logging:
+#      driver: "json-file"
+#      options:
+#        max-size: "20m"
+#        max-file: "12"
+#    ports:
+#      - "5000:5000"
+#    depends_on:
+#      kafka:
+#        condition: service_started
+#      redis:
+#        condition: service_healthy
+##      kafka-init:
+##        condition: service_completed_successfully
+#    env_file:
+#      - .env
+#    environment:
+#      # Override bootstrap server so the app uses the Docker-internal listener
+#      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+#      - SPRING_DATA_REDIS_HOST=redis
+#      - SPRING_DATA_REDIS_PORT=6379
+#      # Keep JVM heap tight so the container doesn't OOM
+##      - JAVA_OPTS=-Xmx300m -Xms300m -XX:MaxMetaspaceSize=128m -XX:+UseContainerSupport
+##    mem_limit: 850m
+#    networks:
+#      - shared-net
+  x-app-build: &app-build
     build: .
-    container_name: sdp-app
+    image: sdp-app:latest
+
+  api:
+    # 2. Tell the API to use the build block
+    <<: *app-build
+    command: ["java", "-jar", "app.jar"]
     restart: unless-stopped
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "20m"
-        max-file: "12"
+    env_file:
+      - .env
+    environment:
+      - SPRING_PROFILES_ACTIVE=prod
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - SPRING_DATA_REDIS_HOST=redis
+      - SPRING_DATA_REDIS_PORT=6379
     ports:
       - "5000:5000"
     depends_on:
@@ -187,18 +224,36 @@ services:
         condition: service_healthy
 #      kafka-init:
 #        condition: service_completed_successfully
+    networks:
+      - shared-net
+#    deploy:
+#      resources:
+#        limits:
+#          memory: 768m
+#          cpus: '1.0'
+
+  scraper:
+    # 2. Tell the API to use the build block
+    <<: *app-build
+    restart: unless-stopped
+    command: ["java", "-jar", "app.jar", "--spring.main.sources=com.teztap.ScraperApplication"]
     env_file:
       - .env
     environment:
-      # Override bootstrap server so the app uses the Docker-internal listener
+      - SPRING_PROFILES_ACTIVE=scraper
+      - SPRING_MAIN_WEB_APPLICATION_TYPE=none
       - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - SPRING_DATA_REDIS_HOST=redis
       - SPRING_DATA_REDIS_PORT=6379
-      # Keep JVM heap tight so the container doesn't OOM
-#      - JAVA_OPTS=-Xmx300m -Xms300m -XX:MaxMetaspaceSize=128m -XX:+UseContainerSupport
-#    mem_limit: 850m
+    # No ports exposed — scraper has no HTTP
+    shm_size: "512mb"
     networks:
       - shared-net
+#    deploy:
+#      resources:
+#        limits:
+#          memory: 1.5g
+#          cpus: '2.0'
 
 networks:
   shared-net:

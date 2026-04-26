@@ -114,6 +114,8 @@ public class MarketService {
                 market.getId(),
                 market.getName(),
                 market.getBaseUrl(),
+                market.getLogoUrl(),
+                market.getDisplayName(),
                 market.getCategoryScrapingBaseUrl(),
                 market.getActive(),
                 market.getCreated()

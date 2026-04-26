@@ -15,4 +15,5 @@ public final class WebSocketRoutes {
 
     // --- Incoming Message Mappings (From Client to Server) ---
     public static final String INBOUND_DELIVERY_OFFER_RESPONSE = "/accept-delivery";
+    public static final String INBOUND_DELIVERY_FINISHED = "/delivery-finished";
 }

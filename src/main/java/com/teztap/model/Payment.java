@@ -39,7 +39,8 @@ public class Payment {
         PENDING,
         WAITING,
         PAID,
-        FAILED
+        FAILED,
+        REFUNDED
     }
 
     public enum PaymentMethod {

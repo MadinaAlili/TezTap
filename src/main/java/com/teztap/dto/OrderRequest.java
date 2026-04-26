@@ -10,10 +10,10 @@ import java.util.List;
 @Data
 public class OrderRequest {
     @NotNull(message = "Branch ID is required")
-    private Long branchId;
+    private List<Long> branchIds;
 
-    @NotEmpty(message = "Order must have at least one item")
-    private List<CartItemRequest> items;
+//    @NotEmpty(message = "Order must have at least one item")
+//    private List<CartItemRequest> items;
 
     // The user might be ordering to a different location than their home
     @NotNull(message = "Delivery address is required")

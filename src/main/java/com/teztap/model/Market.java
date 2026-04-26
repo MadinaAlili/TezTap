@@ -20,11 +20,17 @@ public class Market {
     @Column(nullable = false, unique = true, length = 150)
     private String name;
 
+    @Column
+    private String displayName;
+
     @Column(nullable = false, unique = true, length = 500)
     private String baseUrl;
 
     @Column(nullable = false)
     private String categoryScrapingBaseUrl;
+
+    @Column
+    private String logoUrl;
 
     @Column(nullable = false)
     private Boolean active = true;

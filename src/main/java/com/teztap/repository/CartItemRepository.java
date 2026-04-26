@@ -4,6 +4,7 @@ import com.teztap.model.CartItem;
 import com.teztap.model.Product;
 import com.teztap.model.User;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -21,4 +22,8 @@ public interface CartItemRepository extends JpaRepository<CartItem, Long> {
     List<CartItem> findAllByIdWithProduct(@Param("ids") List<Long> ids);
 
     List<CartItem> findAllByUserId(Long userId);
+
+    @Modifying
+    @Query("DELETE FROM CartItem c WHERE c.id IN :ids AND c.user = :user")
+    void deleteByIdInAndUser(@Param("ids") List<Long> ids, @Param("user") User user);
 }

@@ -22,8 +22,8 @@ public class Order {
     @JoinColumn(name = "user_id", nullable = false)
     private User user;
 
-    @OneToMany(mappedBy = "order", cascade = CascadeType.ALL, orphanRemoval = true)
-    private List<OrderItem> items = new ArrayList<>();
+    @OneToMany(mappedBy = "parentOrder", cascade = CascadeType.ALL, orphanRemoval = true)
+    private List<SubOrder> subOrders = new ArrayList<>();
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
@@ -35,10 +35,6 @@ public class Order {
 
     @Embedded
     private Address orderAddress;
-
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "market_branch_id")
-    private MarketBranch marketBranch;
 
     @CreationTimestamp
     private Date created;
@@ -59,6 +55,7 @@ public class Order {
         ON_THE_WAY,
         SHIPPED,
         DELIVERED,
-        CANCELLED
+        CANCELLED,
+        CANCELLED_COURIER_NOT_FOUND
     }
 }

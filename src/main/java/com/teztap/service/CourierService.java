@@ -77,11 +77,11 @@ public class CourierService {
 
     }
 
-    @KafkaListener(topics = "order-courier-assigned", groupId = "order-courier-assigned-group")
+    @KafkaListener(topics = "order-courier-assigned")
     public void markCourierAsActive(OrderCourierAssignedEvent event) {
         // 1. Add to the global SET for fast O(1) membership checks
         redisTemplate.opsForSet().add(ACTIVE_COURIERS_SET, event.courierUsername());
-        String customerUsername = deliveryRepository.findCustomerUsernameByDeliveryId(event.deliveryId()).orElseThrow();
+        String customerUsername = deliveryRepository.findCustomerUsernameByDeliveryId(event.deliveryId());
 
         // 2. Store the specific delivery mapping with a TTL (e.g., 4 hours)
         // This acts as a safety net so couriers don't stay "active" forever if a crash occurs
@@ -94,7 +94,7 @@ public class CourierService {
         );
     }
 
-    @KafkaListener(topics = "order-courier-unassigned", groupId = "order-courier-unassigned-group")
+    @KafkaListener(topics = "order-courier-unassigned")
     public void markCourierAsIdle(String courierUsername) {
         redisTemplate.opsForSet().remove(ACTIVE_COURIERS_SET, courierUsername);
         redisTemplate.delete(COURIER_ASSIGNMENT_PREFIX + courierUsername);
