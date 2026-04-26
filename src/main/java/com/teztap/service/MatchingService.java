@@ -46,7 +46,7 @@ public class MatchingService {
 
     private static final String GEO_KEY = "couriers:geo";
     private static final int SEARCH_RADIUS = 50; // Km
-    private static final int COURIER_OFFER_TIMEOUT = 20;
+    private static final int COURIER_OFFER_TIMEOUT = 30;
 
     private final Map<Long, ScheduledFuture<?>> timeouts = new ConcurrentHashMap<>();
 

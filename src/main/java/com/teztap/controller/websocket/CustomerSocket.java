@@ -13,6 +13,8 @@ import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Controller;
 
+import java.security.Principal;
+
 @Controller
 @RequiredArgsConstructor
 public class CustomerSocket {
@@ -21,11 +23,11 @@ public class CustomerSocket {
     private final CourierService courierService;
     private final SimpMessagingTemplate messagingTemplate;
 
-    @MessageMapping("/delivery/location")
+    @MessageMapping(WebSocketRoutes.INBOUND_DELIVERY_STATUS_UPDATE)
     public void getDeliveryLocation(DeliveryLocationRequest request,
-                                    Authentication auth) {
+                                    Principal principal) {
 
-        String customerUsername = ((CustomUserDetails) auth.getPrincipal()).getUsername();
+        String customerUsername = principal.getName();
 
         // check ownership
         if (!orderService.isOrderOwnedByUser(request.orderId(), customerUsername)) {
@@ -47,7 +49,7 @@ public class CustomerSocket {
         // send back ONLY to that user
         messagingTemplate.convertAndSendToUser(
                 customerUsername,
-                "/queue/delivery/location",
+                WebSocketRoutes.CUSTOMER_DELIVERY_STATUS,
                 response
         );
     }
