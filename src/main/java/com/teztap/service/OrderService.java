@@ -5,6 +5,7 @@ import com.teztap.kafka.EventPublisher;
 import com.teztap.kafka.kafkaEventDto.OrderCourierAssignedEvent;
 import com.teztap.kafka.kafkaEventDto.OrderCreatedEvent;
 import com.teztap.kafka.kafkaEventDto.OrderPaymentCompletedEvent;
+import com.teztap.kafka.kafkaEventDto.OrderRefundRequestedEvent;
 import com.teztap.model.*;
 import com.teztap.repository.*;
 import jakarta.persistence.EntityNotFoundException;
@@ -35,8 +36,8 @@ public class OrderService {
     private final ProductRepository productRepository;
     private final PaymentRepository paymentRepository;
     private final MarketBranchRepository marketBranchRepository;
-//    private final AddressRepository addressRepository;
     private final CartService cartService;
+    private final DeliveryRepository deliveryRepository; // Fix 2: needed to navigate delivery → order
 
     @Value("${payment.url:http://localhost:5000}")
     private String paymentUrl;
@@ -56,44 +57,35 @@ public class OrderService {
     @Transactional
     @KafkaListener(topics = "order-payment-completed")
     public void finalizeOrder(OrderPaymentCompletedEvent event) {
-        System.err.println("ORDER PAYMENT COMPLETED IN DELIVERY SERVICE");
-        Order order = orderRepository.findById(event.orderId()).get();
+        System.err.println("ORDER PAYMENT COMPLETED IN ORDER SERVICE");
+        Order order = orderRepository.findById(event.orderId())
+                .orElseThrow(() -> new EntityNotFoundException("Order not found: " + event.orderId()));
         order.setStatus(Order.OrderStatus.WAITING_FOR_COURIER);
         order.getPayment().setStatus(Payment.PaymentStatus.PAID);
         orderRepository.save(order);
         paymentRepository.save(order.getPayment());
 
-        // Delete all cart items for the user after successful payment
         List<CartItem> userCartItems = cartItemRepository.findAllByUserId(order.getUser().getId());
         cartItemRepository.deleteAll(userCartItems);
-        
-        // Trigger notification, courier matching, etc.
     }
 
     @Transactional
     public OrderResponse initiateOrder(String username, OrderRequest orderRequest) {
         User user = getUser(username);
 
-        // 1. Fetch Cart Items
         List<CartItem> cartItems = cartItemRepository.findAllByUserId(user.getId());
         if (cartItems.isEmpty()) throw new RuntimeException("Cart is empty");
 
-        // 2. Create the Parent Order
         Order order = new Order();
         order.setUser(user);
         order.setDeliveryNote(orderRequest.getNote());
         order.setOrderAddress(mapToAddress(orderRequest.getDeliveryAddress()));
 
-        // 3. Generate the SubOrders using our new method!
-        // (Assuming orderRequest.getBranchIds() is a List<Long> of all branches involved)
         List<SubOrder> subOrders = groupItemsIntoSubOrders(order, cartItems, orderRequest.getBranchIds());
-
-        // Link the SubOrders to the Parent Order
         order.setSubOrders(subOrders);
 
-        // 4. Calculate total price safely across all sub-orders
         BigDecimal totalPrice = subOrders.stream()
-                .flatMap(subOrder -> subOrder.getItems().stream()) // Flatten all items
+                .flatMap(subOrder -> subOrder.getItems().stream())
                 .map(item -> item.getPriceAtPurchase().multiply(BigDecimal.valueOf(item.getQuantity())))
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
@@ -105,10 +97,8 @@ public class OrderService {
         paymentRepository.save(payment);
         order.setPayment(payment);
 
-        // 5. Save the Parent Order (CascadeType.ALL will save SubOrders and OrderItems automatically)
         Order savedOrder = orderRepository.save(order);
 
-        // 6. Clear the cart securely
         List<Long> orderedCartItemIds = cartItems.stream().map(CartItem::getId).toList();
         cartService.removeSelectedCartItems(username, orderedCartItemIds);
 
@@ -134,29 +124,66 @@ public class OrderService {
         return toOrderResponse(order);
     }
 
-    // Admin only
     public List<OrderResponse> getAllOrders() {
         return orderRepository.findAll().stream().map(this::toOrderResponse).toList();
     }
 
-    // Admin only
     public OrderResponse updateStatus(Long orderId, UpdateOrderStatusRequest req) {
         Order order = orderRepository.findById(orderId)
                 .orElseThrow(() -> new RuntimeException("Order not found"));
-        order.setStatus(req.status());    // ← no .valueOf() needed
+        order.setStatus(req.status());
         return toOrderResponse(orderRepository.save(order));
     }
 
+    // Fix 2: the event carries a deliveryId, not an orderId.
+    // Navigate delivery → subOrder → parentOrder to update the correct Order row.
+    @Transactional
     @KafkaListener(topics = "order-courier-assigned")
-    public Order updateStatus(OrderCourierAssignedEvent event) {
-        Order order = orderRepository.findById(event.deliveryId()).get();
+    public void updateStatusOnCourierAssigned(OrderCourierAssignedEvent event) {
+        Delivery delivery = deliveryRepository.findById(event.deliveryId())
+                .orElseThrow(() -> new EntityNotFoundException(
+                        "Delivery not found for id: " + event.deliveryId() +
+                        " — cannot update order status to ON_THE_WAY"));
+
+        Order order = delivery.getSubOrder().getParentOrder();
         order.setStatus(Order.OrderStatus.ON_THE_WAY);
-        return orderRepository.save(order);
+        orderRepository.save(order);
+
+        System.err.println("[OrderService] updateStatusOnCourierAssigned: Order " +
+                order.getId() + " → ON_THE_WAY (triggered by delivery " + event.deliveryId() + ")");
     }
 
+    // Listens to order-refund-requested (published by DeliveryService.handleCourierNotFound).
+    // Payment service sets payment → REFUNDED on the same topic.
+    // This listener sets the order → CANCELLED_COURIER_NOT_FOUND so the DB reflects
+    // the full cancellation. DeliveryService already sets it on subOrders and conditionally
+    // on the parent, but only when ALL branches fail. This ensures the parent order status
+    // is always updated when a refund is issued, regardless of branch count.
+    @Transactional
+    @KafkaListener(topics = "order-refund-requested", groupId = "order-service-refund")
+    public void handleRefundRequested(OrderRefundRequestedEvent event) {
+        Order order = orderRepository.findById(event.orderId())
+                .orElseThrow(() -> new EntityNotFoundException("Order not found: " + event.orderId()));
+
+        // Only update if not already in a terminal state to stay idempotent
+        if (order.getStatus() == Order.OrderStatus.CANCELLED_COURIER_NOT_FOUND
+                || order.getStatus() == Order.OrderStatus.DELIVERED
+                || order.getStatus() == Order.OrderStatus.CANCELLED) {
+            System.err.println("[OrderService] handleRefundRequested: order " + event.orderId()
+                    + " already in terminal state " + order.getStatus() + " — skipping");
+            return;
+        }
+
+        order.setStatus(Order.OrderStatus.CANCELLED_COURIER_NOT_FOUND);
+        orderRepository.save(order);
+
+        System.err.println("[OrderService] handleRefundRequested: order " + event.orderId()
+                + " → CANCELLED_COURIER_NOT_FOUND (refund amount=" + event.refundAmount() + ")");
+    }
 
     public boolean isWaitingForCourier(Long orderId) {
-        Order order = orderRepository.findById(orderId).get();
+        Order order = orderRepository.findById(orderId)
+                .orElseThrow(() -> new EntityNotFoundException("Order not found: " + orderId));
         return order.getStatus() == Order.OrderStatus.WAITING_FOR_COURIER;
     }
 
@@ -169,18 +196,15 @@ public class OrderService {
     }
 
     public boolean isOrderOwnedByUser(Long orderId, String username) {
-        Order order = orderRepository.findById(orderId).get();
+        Order order = orderRepository.findById(orderId)
+                .orElseThrow(() -> new EntityNotFoundException("Order not found: " + orderId));
         return order.getUser().getUsername().equals(username);
     }
 
     private Address mapToAddress(AddressDto dto) {
         Address address = new Address();
-//        address.setCity(dto.getCity());
-//        address.setDistrict(dto.getDistrict());
         address.setFullAddress(dto.fullAddress());
         address.setAdditionalInfo(dto.additionalInfo());
-
-        // Use Geometry utility
         address.setLocation(GeometryUtils.createPoint(
                 BigDecimal.valueOf(dto.longitude()),
                 BigDecimal.valueOf(dto.latitude())
@@ -191,38 +215,28 @@ public class OrderService {
     @Transactional(readOnly = true)
     @SneakyThrows
     public List<SubOrderDto> getOrderItemsGroupedByBranch(String username, Long orderId, boolean isAdmin) {
-
-        // 1. Fetch the order
         Order order = orderRepository.findById(orderId)
                 .orElseThrow(() -> new EntityNotFoundException("Order not found with id: " + orderId));
 
-        // 2. Security Check
         if (!isAdmin && !order.getUser().getUsername().equals(username)) {
             throw new AccessDeniedException("You are not authorized to view the items of this order.");
         }
 
-        // 3. Map the SubOrders and their nested Items
         return order.getSubOrders().stream()
                 .map(subOrder -> {
-                    // Extract the Address entity from the branch
                     Address branchAddressEntity = subOrder.getMarketBranch().getAddress();
-
-                    // Map it to AddressDto (Point X is Longitude, Y is Latitude)
                     AddressDto branchAddressDto = new AddressDto(
-                            branchAddressEntity.getLocation().getX(), // Longitude
-                            branchAddressEntity.getLocation().getY(), // Latitude
+                            branchAddressEntity.getLocation().getX(),
+                            branchAddressEntity.getLocation().getY(),
                             branchAddressEntity.getFullAddress(),
                             branchAddressEntity.getAdditionalInfo()
                     );
-
                     return new SubOrderDto(
                             subOrder.getId(),
                             subOrder.getMarketBranch().getId(),
                             subOrder.getMarketBranch().getMarket().getName(),
-                            branchAddressDto, // Pass the mapped DTO here
+                            branchAddressDto,
                             subOrder.getStatus().name(),
-
-                            // Map the items
                             subOrder.getItems().stream()
                                     .map(item -> new OrderItemDto(
                                             item.getProduct().getId(),
@@ -239,29 +253,24 @@ public class OrderService {
     @Transactional(readOnly = true)
     @SneakyThrows
     public OrderSummaryDto getOrderSummary(String username, Long orderId, boolean isAdmin) {
-
-        // 1. Fetch the Order
         Order order = orderRepository.findById(orderId)
                 .orElseThrow(() -> new EntityNotFoundException("Order not found with id: " + orderId));
 
-        // 2. Security Check
         if (!isAdmin && !order.getUser().getUsername().equals(username)) {
             throw new AccessDeniedException("You are not authorized to view this order.");
         }
 
-        // 3. Map the Embedded Address to AddressDto
         Address addr = order.getOrderAddress();
         AddressDto addressDto = null;
         if (addr != null && addr.getLocation() != null) {
             addressDto = new AddressDto(
-                    addr.getLocation().getX(), // Longitude
-                    addr.getLocation().getY(), // Latitude
+                    addr.getLocation().getX(),
+                    addr.getLocation().getY(),
                     addr.getFullAddress(),
                     addr.getAdditionalInfo()
             );
         }
 
-        // 4. Map the SubOrders to a lightweight summary list
         List<SubOrderSummaryDto> deliverySummaries = order.getSubOrders().stream()
                 .map(subOrder -> new SubOrderSummaryDto(
                         subOrder.getId(),
@@ -269,7 +278,6 @@ public class OrderService {
                         subOrder.getStatus().name()
                 )).toList();
 
-        // 5. Return the updated OrderSummaryDto
         return new OrderSummaryDto(
                 order.getId(),
                 order.getStatus().name(),
@@ -278,50 +286,36 @@ public class OrderService {
                 order.getDeliveryNote(),
                 addressDto,
                 order.getPayment() != null ? order.getPayment().getId() : null,
-                deliverySummaries // The new list of branches
+                deliverySummaries
         );
     }
 
     private List<SubOrder> groupItemsIntoSubOrders(Order parentOrder, List<CartItem> cartItems, List<Long> requestedBranchIds) {
-
-        // 1. Fetch the actual branch entities requested by the user
         List<MarketBranch> selectedBranches = marketBranchRepository.findAllById(requestedBranchIds);
 
-        // 2. Create a fast lookup map: { MarketId -> MarketBranch }
-        // This tells us: "For Market X, the user chose Branch Y"
         Map<Long, MarketBranch> marketToBranchMap = selectedBranches.stream()
                 .collect(Collectors.toMap(
                         branch -> branch.getMarket().getId(),
                         branch -> branch,
-                        // THE FIX: If there are duplicate branches for the same market, keep the first one
                         (existingBranch, duplicateBranch) -> existingBranch
                 ));
 
-        // 3. Prepare our map to group CartItems by Branch
         Map<MarketBranch, List<CartItem>> itemsByBranch = new HashMap<>();
 
-        // 4. Sort every CartItem into the correct Branch bucket
         for (CartItem cartItem : cartItems) {
             Product product = cartItem.getProduct();
             Long productMarketId = product.getMarket().getId();
-
             MarketBranch assignedBranch = marketToBranchMap.get(productMarketId);
-
             if (assignedBranch == null) {
-                // Security/Validation check: The user has an item in their cart,
-                // but the frontend didn't send a branch ID for that item's market!
                 throw new IllegalArgumentException(
                         "No branch selected for market: " + product.getMarket().getName()
-                                + " (Product: " + product.getName() + ")"
+                        + " (Product: " + product.getName() + ")"
                 );
             }
-
             itemsByBranch.computeIfAbsent(assignedBranch, k -> new ArrayList<>()).add(cartItem);
         }
 
-        // 5. Convert these buckets into SubOrder entities
         List<SubOrder> subOrders = new ArrayList<>();
-
         for (Map.Entry<MarketBranch, List<CartItem>> entry : itemsByBranch.entrySet()) {
             MarketBranch branch = entry.getKey();
             List<CartItem> branchCartItems = entry.getValue();
@@ -329,9 +323,8 @@ public class OrderService {
             SubOrder subOrder = new SubOrder();
             subOrder.setParentOrder(parentOrder);
             subOrder.setMarketBranch(branch);
-            subOrder.setStatus(Order.OrderStatus.PENDING); // Initial status
+            subOrder.setStatus(Order.OrderStatus.PENDING);
 
-            // Map CartItems to OrderItems for this specific SubOrder
             List<OrderItem> subOrderItems = branchCartItems.stream().map(cartItem -> new OrderItem()
                     .setSubOrder(subOrder)
                     .setProduct(cartItem.getProduct())

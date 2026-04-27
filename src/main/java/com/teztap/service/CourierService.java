@@ -3,7 +3,7 @@ package com.teztap.service;
 import com.teztap.controller.websocket.WebSocketRoutes;
 import com.teztap.dto.DeliveryStatusResponse;
 import com.teztap.kafka.kafkaEventDto.OrderCourierAssignedEvent;
-import com.teztap.model.Courier;
+import com.teztap.kafka.kafkaEventDto.OrderCourierUnassignedEvent;
 import com.teztap.model.Delivery;
 import com.teztap.model.Order;
 import com.teztap.repository.DeliveryRepository;
@@ -31,86 +31,116 @@ public class CourierService {
     private final RedisTemplate<String, Object> redisTemplate;
     private final StringRedisTemplate stringRedisTemplate;
     private final DeliveryRepository deliveryRepository;
-
     private final SimpMessagingTemplate messagingTemplate;
 
-    private final String GEO_KEY = "couriers:geo";
-    private static final String ACTIVE_COURIERS_SET = "couriers:active:set";
+    private static final String GEO_KEY = "couriers:geo";
+
+    // Replaced plain Set membership with a per-courier key that has a TTL matching
+    // the assignment key (4h). If the app crashes and order-courier-unassigned is
+    // never consumed, both keys expire automatically and the courier goes idle.
+    // Pattern: courier:active:<username> → "1"  (TTL: 4h)
+    private static final String COURIER_ACTIVE_PREFIX     = "courier:active:";
+
+    // Pattern: courier:assignment:<username> → "<deliveryId>:<customerUsername>"  (TTL: 4h)
     private static final String COURIER_ASSIGNMENT_PREFIX = "courier:assignment:";
 
-    // updates courier live location, stores location in redis
+    private static final Duration ACTIVE_TTL = Duration.ofHours(4);
+
     public void updateCourierLocation(String courierUsername, Point point) {
+        // 1. Update geo position + refresh heartbeat TTL atomically
         redisTemplate.executePipelined((RedisCallback<Object>) connection -> {
             byte[] geoKey = GEO_KEY.getBytes();
             byte[] ttlKey = ("courier:ttl:" + courierUsername).getBytes();
             byte[] member = courierUsername.getBytes();
-
-            // 1. Update Location in GeoSet
             connection.geoCommands().geoAdd(geoKey, point, member);
-
-            // 2. Refresh Heartbeat TTL (20 seconds)
+            // Heartbeat: 20s. If courier stops sending, they're removed from matching.
             connection.stringCommands().setEx(ttlKey, 20, "online".getBytes());
-
-            return null; // Pipeline returns results as a list separately
+            return null;
         });
 
-        // Send the location to the client via WebSocket if courier has active delivery
-        if (Boolean.TRUE.equals(redisTemplate.opsForSet().isMember(ACTIVE_COURIERS_SET, courierUsername))) {
+        // 2. Push to customer only if courier has an active delivery
+        Boolean isActive = redisTemplate.hasKey(COURIER_ACTIVE_PREFIX + courierUsername);
+        if (!Boolean.TRUE.equals(isActive)) return;
 
-            // 2. Get the composite string: "123:john_doe"
-            String rawData = redisTemplate.opsForValue().get(COURIER_ASSIGNMENT_PREFIX + courierUsername).toString();
-
-            if (rawData != null && rawData.contains(":")) {
-                String[] parts = rawData.split(":");
-                Long deliveryId = Long.valueOf(parts[0]);
-                String customerUsername = parts[1];
-
-                // 3. Send live update to the specific customer
-                // No DB check required!
-                messagingTemplate.convertAndSendToUser(
-                        customerUsername,
-                        WebSocketRoutes.CUSTOMER_DELIVERY_STATUS,
-                        new DeliveryStatusResponse(deliveryId, point.getX(), point.getY(), Order.OrderStatus.ON_THE_WAY)
-                );
-            }
+        Object rawObj = redisTemplate.opsForValue().get(COURIER_ASSIGNMENT_PREFIX + courierUsername);
+        if (rawObj == null) {
+            // Assignment key expired but active key still present — inconsistent state.
+            // Clean up and stop pushing.
+            System.err.println("[CourierService] updateCourierLocation: assignment key missing for active courier '"
+                    + courierUsername + "' — cleaning up stale active key");
+            redisTemplate.delete(COURIER_ACTIVE_PREFIX + courierUsername);
+            return;
         }
 
-    }
+        String rawData = rawObj.toString();
+        if (!rawData.contains(":")) {
+            System.err.println("[CourierService] updateCourierLocation: malformed assignment '" + rawData + "'");
+            return;
+        }
 
-    @KafkaListener(topics = "order-courier-assigned")
-    public void markCourierAsActive(OrderCourierAssignedEvent event) {
-        // 1. Add to the global SET for fast O(1) membership checks
-        redisTemplate.opsForSet().add(ACTIVE_COURIERS_SET, event.courierUsername());
-        String customerUsername = deliveryRepository.findCustomerUsernameByDeliveryId(event.deliveryId());
+        String[] parts            = rawData.split(":", 2);
+        Long     deliveryId       = Long.valueOf(parts[0]);
+        String   customerUsername = parts[1];
 
-        // 2. Store the specific delivery mapping with a TTL (e.g., 4 hours)
-        // This acts as a safety net so couriers don't stay "active" forever if a crash occurs
-        // We store customerUsername as well to ensure we can identify the delivery later without checking database
-        String value = event.deliveryId() + ":" + customerUsername;
-        redisTemplate.opsForValue().set(
-                COURIER_ASSIGNMENT_PREFIX + event.courierUsername(),
-                value,
-                Duration.ofHours(4)
+        messagingTemplate.convertAndSendToUser(
+                customerUsername,
+                WebSocketRoutes.CUSTOMER_DELIVERY_STATUS,
+                new DeliveryStatusResponse(deliveryId, point.getX(), point.getY(), Order.OrderStatus.ON_THE_WAY)
         );
+
+        System.err.println("[CourierService] Pushed location to customer '" + customerUsername +
+                "' for delivery " + deliveryId);
     }
 
-    @KafkaListener(topics = "order-courier-unassigned")
-    public void markCourierAsIdle(String courierUsername) {
-        redisTemplate.opsForSet().remove(ACTIVE_COURIERS_SET, courierUsername);
-        redisTemplate.delete(COURIER_ASSIGNMENT_PREFIX + courierUsername);
+    @KafkaListener(topics = "order-courier-assigned", groupId = "courier-service-assigned")
+    public void markCourierAsActive(OrderCourierAssignedEvent event) {
+        String customerUsername = deliveryRepository.findCustomerUsernameByDeliveryId(event.deliveryId());
+        if (customerUsername == null) {
+            System.err.println("[CourierService] markCourierAsActive: no customer for delivery "
+                    + event.deliveryId() + " — skipping");
+            return;
+        }
+
+        String assignmentValue = event.deliveryId() + ":" + customerUsername;
+
+        // Both keys get the same TTL so they expire together if unassigned event is missed
+        redisTemplate.opsForValue().set(
+                COURIER_ACTIVE_PREFIX + event.courierUsername(), "1", ACTIVE_TTL);
+        redisTemplate.opsForValue().set(
+                COURIER_ASSIGNMENT_PREFIX + event.courierUsername(), assignmentValue, ACTIVE_TTL);
+
+        System.err.println("[CourierService] markCourierAsActive: courier '" + event.courierUsername()
+                + "' → delivery " + event.deliveryId() + ", customer '" + customerUsername + "'");
+    }
+
+    @KafkaListener(topics = "order-courier-unassigned", groupId = "courier-service-unassigned")
+    public void markCourierAsIdle(OrderCourierUnassignedEvent event) {
+        redisTemplate.delete(COURIER_ACTIVE_PREFIX + event.courierUsername());
+        redisTemplate.delete(COURIER_ASSIGNMENT_PREFIX + event.courierUsername());
+        System.err.println("[CourierService] markCourierAsIdle: courier '" + event.courierUsername() + "' is now idle");
     }
 
     public Point getCourierLocation(String courierUsername) {
         List<Point> points = redisTemplate.opsForGeo().position(GEO_KEY, courierUsername);
-        return !points.isEmpty() ? points.get(0) : null;
+        return (points != null && !points.isEmpty()) ? points.get(0) : null;
     }
 
-    public Point getCourierLocation(Long orderId) {
-        Delivery delivery = deliveryRepository.findById(orderId).get();
-        Courier deliveryCourier = delivery.getCourier();
-        List<Point> points = redisTemplate.opsForGeo().position(GEO_KEY, deliveryCourier.getUser().getUsername());
-        return !points.isEmpty() ? points.get(0) : null;
+    public Point getCourierLocation(Long deliveryId) {
+        Delivery delivery = deliveryRepository.findById(deliveryId).orElse(null);
+        if (delivery == null) {
+            System.err.println("[CourierService] getCourierLocation: delivery " + deliveryId + " not found");
+            return null;
+        }
+        String courierUsername = delivery.getCourierUsername();
+        if (courierUsername == null) {
+            System.err.println("[CourierService] getCourierLocation: delivery " + deliveryId + " has no courier yet");
+            return null;
+        }
+        List<Point> points = redisTemplate.opsForGeo().position(GEO_KEY, courierUsername);
+        return (points != null && !points.isEmpty()) ? points.get(0) : null;
     }
+
+    // ── Admin / legacy ──────────────────────────────────────────────────────────
 
     public void setCourierOnline(Long courierId) {
         redisTemplate.opsForValue().set("couriers:" + courierId + ":online", true, Duration.ofSeconds(20));
@@ -124,10 +154,12 @@ public class CourierService {
         redisTemplate.opsForGeo().add("couriers_geo", new Point(lng, lat), courierId.toString());
     }
 
-    public GeoResults<RedisGeoCommands.GeoLocation<Object>> findNearestCouriers(double lat, double lng, double radiusKm) {
-
-        return redisTemplate.opsForGeo().search("couriers_geo", GeoReference.fromCoordinate(lng, lat), new Distance(radiusKm, Metrics.KILOMETERS));
+    public GeoResults<RedisGeoCommands.GeoLocation<Object>> findNearestCouriers(
+            double lat, double lng, double radiusKm) {
+        return redisTemplate.opsForGeo().search(
+                "couriers_geo",
+                GeoReference.fromCoordinate(lng, lat),
+                new Distance(radiusKm, Metrics.KILOMETERS)
+        );
     }
-
-
 }

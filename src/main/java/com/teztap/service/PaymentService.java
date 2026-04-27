@@ -31,7 +31,7 @@ public class PaymentService {
         eventPublisher.publish(new OrderPaymentCompletedEvent(orderId));
     }
 
-    @KafkaListener(topics = "order-refund-requested")
+    @KafkaListener(topics = "order-refund-requested", groupId = "10299")
     public void refundPayment(OrderRefundRequestedEvent event){
         Order order = orderRepository.findById(event.orderId()).get();
         Payment payment = order.getPayment();

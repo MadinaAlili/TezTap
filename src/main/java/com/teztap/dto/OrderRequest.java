@@ -1,7 +1,6 @@
 package com.teztap.dto;
 
 import com.teztap.model.Payment;
-import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import lombok.Data;
 

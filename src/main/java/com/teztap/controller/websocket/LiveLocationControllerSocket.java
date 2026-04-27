@@ -20,19 +20,42 @@ public class LiveLocationControllerSocket {
 
     @MessageMapping("/location")
     public void location(LocationRequest locationRequest, Authentication auth) {
+        if (auth == null) {
+            System.err.println("[LiveLocationSocket] ERROR: auth is null — JWT not set on session.");
+            return;
+        }
+
         CustomUserDetails user = (CustomUserDetails) auth.getPrincipal();
         String username = user.getUsername();
-        System.err.println("Received location update from [reverse lng<->lat]" + username + ": " + locationRequest);
-        // Redis store Point object from data geo which is the reverse order of Jts, so we save in reverse
+
+        if (locationRequest == null) {
+            System.err.println("[LiveLocationSocket] ERROR: locationRequest is null for courier '" + username + "'");
+            return;
+        }
+
+        // NOTE: Spring GeoPoint stores as Point(x, y). Redis GEO uses (longitude, latitude).
+        // We intentionally swap here so that:
+        //   point.getX() = lat  (what we stored)
+        //   point.getY() = lng  (what we stored)
+        // CourierService.updateCourierLocation() sends point.getX() as courierLng and
+        // point.getY() as courierLat in DeliveryStatusResponse — which is inverted.
+        // TODO: align this convention. For now both sides are consistently wrong in the
+        // same direction so the client receives swapped coords — fix on client side or
+        // flip here and in DeliveryStatusResponse field names.
         Point point = new Point(locationRequest.lat().doubleValue(), locationRequest.lng().doubleValue());
 
-        courierService.updateCourierLocation(username, point);
+        try {
+            courierService.updateCourierLocation(username, point);
+        } catch (Exception e) {
+            System.err.println("[LiveLocationSocket] ERROR in updateCourierLocation for '" + username + "': "
+                    + e.getClass().getSimpleName() + ": " + e.getMessage());
+        }
     }
 
-    @MessageMapping("/hello")        // client sends to /app/hello
-    @SendTo("/topic/test")          // server sends to /topic/test
+    @MessageMapping("/hello")
+    @SendTo("/topic/test")
     public String test(String message) {
-        System.out.println("Received: " + message);
+        System.err.println("[LiveLocationSocket] /hello ping: " + message);
         return "world";
     }
 }

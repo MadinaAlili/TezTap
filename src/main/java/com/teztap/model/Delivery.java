@@ -1,9 +1,7 @@
 package com.teztap.model;
 
 import jakarta.persistence.*;
-import lombok.Data;
 import lombok.Getter;
-import lombok.RequiredArgsConstructor;
 import lombok.Setter;
 import lombok.experimental.Accessors;
 import org.locationtech.jts.geom.LineString;
@@ -21,15 +19,15 @@ public class Delivery {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    // 🚨 ARCHITECTURE FIX: Now points to the specific branch's portion of the order
     @OneToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "sub_order_id", referencedColumnName = "id", nullable = false)
     private SubOrder subOrder;
 
-    // 🚨 CARDINALITY FIX: A courier can do many deliveries
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "courier_id", referencedColumnName = "id")
-    private Courier courier;
+    // Stores the assigned courier's username directly.
+    // No Courier entity is used — the User table is the source of truth.
+    // Add a DB migration: ALTER TABLE deliveries DROP COLUMN courier_id; ADD COLUMN courier_username VARCHAR(255);
+    @Column(name = "courier_username")
+    private String courierUsername;
 
     // polyline stored as PostGIS geometry
     @Column(columnDefinition = "geometry(LineString,4326)")

@@ -1,8 +1,5 @@
 package com.teztap.dto;
 
-import com.teztap.model.Address;
-import com.teztap.model.Order;
-
 import java.util.Date;
 import java.util.List;
 

@@ -48,4 +48,7 @@ public class KafkaTopicConfig {
 
     @Bean
     public NewTopic subOrderRequiresCourierTopic() { return new NewTopic("suborder-requires-courier", 3, (short) 1); }
+
+    @Bean
+    public NewTopic orderCourierUnassignedTopic() { return new NewTopic("order-courier-unassigned", 3, (short) 1); }
 }
