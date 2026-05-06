@@ -1,5 +1,6 @@
 package com.teztap.dto;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 public record CourierDeliveryDto(
@@ -12,9 +13,14 @@ public record CourierDeliveryDto(
         String marketName,
         String deliveryNote,
 
-        // Pickup: where the courier collects the order (market branch location)
+        // ── Addresses ──────────────────────────────────────────────────────
         AddressDto pickupAddress,
+        AddressDto dropoffAddress,
 
-        // Dropoff: where the courier delivers to (customer's order address)
-        AddressDto dropoffAddress
+        // ── Pricing ────────────────────────────────────────────────────────
+        // Locked in at delivery-creation time — reflects the fare the customer
+        // was charged for this specific delivery leg.
+        BigDecimal deliveryFee,
+        Double distanceKm,
+        Double durationMinutes
 ) {}

@@ -4,6 +4,7 @@ import com.teztap.dto.CategoryDto;
 import com.teztap.dto.ProductDto;
 import com.teztap.service.CategoryService;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -35,9 +36,13 @@ public class CategoryController {
     public ResponseEntity<List<ProductDto>> getProductsByCategoryId(
             @PathVariable Long categoryId,
             @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "20") int size) {
+            @RequestParam(defaultValue = "20") int size,
+            Authentication auth) {
 
-        return ResponseEntity.ok(categoryService.getProductsByCategoryId(categoryId, page, size));
+        // Safely extract username (null if guest)
+        String username = (auth != null && auth.isAuthenticated()) ? auth.getName() : null;
+
+        return ResponseEntity.ok(categoryService.getProductsByCategoryId(categoryId, page, size, username));
     }
 
     // 4. Get products by category name with pagination
@@ -45,9 +50,13 @@ public class CategoryController {
     public ResponseEntity<List<ProductDto>> getProductsByCategoryName(
             @PathVariable String categoryName,
             @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "20") int size) {
+            @RequestParam(defaultValue = "20") int size,
+            Authentication auth) {
 
-        return ResponseEntity.ok(categoryService.getProductsByCategoryName(categoryName, page, size));
+        // Safely extract username (null if guest)
+        String username = (auth != null && auth.isAuthenticated()) ? auth.getName() : null;
+
+        return ResponseEntity.ok(categoryService.getProductsByCategoryName(categoryName, page, size, username));
     }
 
     // 5. Get total number of pages for a specific category's products

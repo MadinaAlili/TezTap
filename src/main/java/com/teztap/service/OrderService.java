@@ -37,7 +37,7 @@ public class OrderService {
     private final PaymentRepository paymentRepository;
     private final MarketBranchRepository marketBranchRepository;
     private final CartService cartService;
-    private final DeliveryRepository deliveryRepository; // Fix 2: needed to navigate delivery → order
+    private final DeliveryRepository deliveryRepository;
 
     @Value("${payment.url:http://localhost:5000}")
     private String paymentUrl;
@@ -62,11 +62,14 @@ public class OrderService {
                 .orElseThrow(() -> new EntityNotFoundException("Order not found: " + event.orderId()));
         order.setStatus(Order.OrderStatus.WAITING_FOR_COURIER);
         order.getPayment().setStatus(Payment.PaymentStatus.PAID);
+
         orderRepository.save(order);
         paymentRepository.save(order.getPayment());
 
-        List<CartItem> userCartItems = cartItemRepository.findAllByUserId(order.getUser().getId());
-        cartItemRepository.deleteAll(userCartItems);
+        // 🚨 CRITICAL FIX: Removed the code that wiped the entire cart here!
+        // The items are already selectively deleted in initiateOrder().
+        // If we wipe the cart here, we destroy the unselected items (like Bazarstore)
+        // that the user intentionally left behind for later.
     }
 
     @Transactional
@@ -76,12 +79,45 @@ public class OrderService {
         List<CartItem> cartItems = cartItemRepository.findAllByUserId(user.getId());
         if (cartItems.isEmpty()) throw new RuntimeException("Cart is empty");
 
+        // 1. Fetch the branches the user explicitly requested
+        List<MarketBranch> selectedBranches = marketBranchRepository.findAllById(orderRequest.getBranchIds());
+        if (selectedBranches.isEmpty()) {
+            throw new RuntimeException("No valid branches found for the provided IDs.");
+        }
+
+        // Map Market ID -> Branch so we can quickly match products to the correct branch
+        Map<Long, MarketBranch> marketToBranchMap = selectedBranches.stream()
+                .collect(Collectors.toMap(
+                        branch -> branch.getMarket().getId(),
+                        branch -> branch,
+                        (existingBranch, duplicateBranch) -> existingBranch
+                ));
+
+        // 2. PARTIAL CHECKOUT LOGIC: Separate the cart items
+        List<CartItem> itemsToOrder = new ArrayList<>();
+
+        for (CartItem item : cartItems) {
+            Long marketId = item.getProduct().getMarket().getId();
+            // If the user selected a branch for this item's market, we order it.
+            // If not, we completely ignore it (leaving it in the cart).
+            if (marketToBranchMap.containsKey(marketId)) {
+                itemsToOrder.add(item);
+            }
+        }
+
+        // Safety check: Did they select branches that don't match any items?
+        if (itemsToOrder.isEmpty()) {
+            throw new RuntimeException("None of the selected branches match the items in your cart.");
+        }
+
+        // 3. Build the Order
         Order order = new Order();
         order.setUser(user);
         order.setDeliveryNote(orderRequest.getNote());
         order.setOrderAddress(mapToAddress(orderRequest.getDeliveryAddress()));
 
-        List<SubOrder> subOrders = groupItemsIntoSubOrders(order, cartItems, orderRequest.getBranchIds());
+        // Pass ONLY the filtered items and the pre-built map
+        List<SubOrder> subOrders = groupItemsIntoSubOrders(order, itemsToOrder, marketToBranchMap);
         order.setSubOrders(subOrders);
 
         BigDecimal totalPrice = subOrders.stream()
@@ -99,12 +135,52 @@ public class OrderService {
 
         Order savedOrder = orderRepository.save(order);
 
-        List<Long> orderedCartItemIds = cartItems.stream().map(CartItem::getId).toList();
+        // 4. Delete ONLY the items that were successfully converted into an order
+        List<Long> orderedCartItemIds = itemsToOrder.stream().map(CartItem::getId).toList();
         cartService.removeSelectedCartItems(username, orderedCartItemIds);
 
         eventPublisher.publish(new OrderCreatedEvent(savedOrder.getId(), user.getId()));
 
         return toOrderResponse(savedOrder);
+    }
+
+    // Notice we changed the signature to accept the pre-filtered items and the map
+    private List<SubOrder> groupItemsIntoSubOrders(Order parentOrder, List<CartItem> itemsToOrder, Map<Long, MarketBranch> marketToBranchMap) {
+        Map<MarketBranch, List<CartItem>> itemsByBranch = new HashMap<>();
+
+        for (CartItem cartItem : itemsToOrder) {
+            Product product = cartItem.getProduct();
+            Long productMarketId = product.getMarket().getId();
+            MarketBranch assignedBranch = marketToBranchMap.get(productMarketId);
+
+            // This is guaranteed to be safe because of the filtering in initiateOrder
+            itemsByBranch.computeIfAbsent(assignedBranch, k -> new ArrayList<>()).add(cartItem);
+        }
+
+        List<SubOrder> subOrders = new ArrayList<>();
+        for (Map.Entry<MarketBranch, List<CartItem>> entry : itemsByBranch.entrySet()) {
+            MarketBranch branch = entry.getKey();
+            List<CartItem> branchCartItems = entry.getValue();
+
+            SubOrder subOrder = new SubOrder();
+            subOrder.setParentOrder(parentOrder);
+            subOrder.setMarketBranch(branch);
+            subOrder.setStatus(Order.OrderStatus.PENDING);
+
+            List<OrderItem> subOrderItems = branchCartItems.stream().map(cartItem -> new OrderItem()
+                    .setSubOrder(subOrder)
+                    .setProduct(cartItem.getProduct())
+                    .setQuantity(cartItem.getQuantity())
+                    .setPriceAtPurchase(cartItem.getProduct().getDiscountPrice() != null
+                            ? cartItem.getProduct().getDiscountPrice()
+                            : cartItem.getProduct().getOriginalPrice())
+            ).toList();
+
+            subOrder.setItems(subOrderItems);
+            subOrders.add(subOrder);
+        }
+
+        return subOrders;
     }
 
     public List<OrderResponse> getMyOrders(String username) {
@@ -135,15 +211,13 @@ public class OrderService {
         return toOrderResponse(orderRepository.save(order));
     }
 
-    // Fix 2: the event carries a deliveryId, not an orderId.
-    // Navigate delivery → subOrder → parentOrder to update the correct Order row.
     @Transactional
     @KafkaListener(topics = "order-courier-assigned")
     public void updateStatusOnCourierAssigned(OrderCourierAssignedEvent event) {
         Delivery delivery = deliveryRepository.findById(event.deliveryId())
                 .orElseThrow(() -> new EntityNotFoundException(
                         "Delivery not found for id: " + event.deliveryId() +
-                        " — cannot update order status to ON_THE_WAY"));
+                                " — cannot update order status to ON_THE_WAY"));
 
         Order order = delivery.getSubOrder().getParentOrder();
         order.setStatus(Order.OrderStatus.ON_THE_WAY);
@@ -153,19 +227,12 @@ public class OrderService {
                 order.getId() + " → ON_THE_WAY (triggered by delivery " + event.deliveryId() + ")");
     }
 
-    // Listens to order-refund-requested (published by DeliveryService.handleCourierNotFound).
-    // Payment service sets payment → REFUNDED on the same topic.
-    // This listener sets the order → CANCELLED_COURIER_NOT_FOUND so the DB reflects
-    // the full cancellation. DeliveryService already sets it on subOrders and conditionally
-    // on the parent, but only when ALL branches fail. This ensures the parent order status
-    // is always updated when a refund is issued, regardless of branch count.
     @Transactional
     @KafkaListener(topics = "order-refund-requested", groupId = "order-service-refund")
     public void handleRefundRequested(OrderRefundRequestedEvent event) {
         Order order = orderRepository.findById(event.orderId())
                 .orElseThrow(() -> new EntityNotFoundException("Order not found: " + event.orderId()));
 
-        // Only update if not already in a terminal state to stay idempotent
         if (order.getStatus() == Order.OrderStatus.CANCELLED_COURIER_NOT_FOUND
                 || order.getStatus() == Order.OrderStatus.DELIVERED
                 || order.getStatus() == Order.OrderStatus.CANCELLED) {
@@ -288,56 +355,5 @@ public class OrderService {
                 order.getPayment() != null ? order.getPayment().getId() : null,
                 deliverySummaries
         );
-    }
-
-    private List<SubOrder> groupItemsIntoSubOrders(Order parentOrder, List<CartItem> cartItems, List<Long> requestedBranchIds) {
-        List<MarketBranch> selectedBranches = marketBranchRepository.findAllById(requestedBranchIds);
-
-        Map<Long, MarketBranch> marketToBranchMap = selectedBranches.stream()
-                .collect(Collectors.toMap(
-                        branch -> branch.getMarket().getId(),
-                        branch -> branch,
-                        (existingBranch, duplicateBranch) -> existingBranch
-                ));
-
-        Map<MarketBranch, List<CartItem>> itemsByBranch = new HashMap<>();
-
-        for (CartItem cartItem : cartItems) {
-            Product product = cartItem.getProduct();
-            Long productMarketId = product.getMarket().getId();
-            MarketBranch assignedBranch = marketToBranchMap.get(productMarketId);
-            if (assignedBranch == null) {
-                throw new IllegalArgumentException(
-                        "No branch selected for market: " + product.getMarket().getName()
-                        + " (Product: " + product.getName() + ")"
-                );
-            }
-            itemsByBranch.computeIfAbsent(assignedBranch, k -> new ArrayList<>()).add(cartItem);
-        }
-
-        List<SubOrder> subOrders = new ArrayList<>();
-        for (Map.Entry<MarketBranch, List<CartItem>> entry : itemsByBranch.entrySet()) {
-            MarketBranch branch = entry.getKey();
-            List<CartItem> branchCartItems = entry.getValue();
-
-            SubOrder subOrder = new SubOrder();
-            subOrder.setParentOrder(parentOrder);
-            subOrder.setMarketBranch(branch);
-            subOrder.setStatus(Order.OrderStatus.PENDING);
-
-            List<OrderItem> subOrderItems = branchCartItems.stream().map(cartItem -> new OrderItem()
-                    .setSubOrder(subOrder)
-                    .setProduct(cartItem.getProduct())
-                    .setQuantity(cartItem.getQuantity())
-                    .setPriceAtPurchase(cartItem.getProduct().getDiscountPrice() != null
-                            ? cartItem.getProduct().getDiscountPrice()
-                            : cartItem.getProduct().getOriginalPrice())
-            ).toList();
-
-            subOrder.setItems(subOrderItems);
-            subOrders.add(subOrder);
-        }
-
-        return subOrders;
     }
 }

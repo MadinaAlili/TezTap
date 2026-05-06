@@ -1,6 +1,8 @@
 package com.teztap.service;
 
 import com.teztap.dto.DeliveryFinishedResponse;
+import com.teztap.dto.PriceEstimate;
+import com.teztap.dto.PriceRequest;
 import com.teztap.dto.RouteInfo;
 import com.teztap.kafka.EventPublisher;
 import com.teztap.kafka.kafkaEventDto.*;
@@ -24,7 +26,9 @@ import java.time.LocalDateTime;
 @Service
 @RequiredArgsConstructor
 public class DeliveryService {
+
     private final RoutingService routingService;
+    private final PricingService pricingService;   // injected for fare calculation
     private final DeliveryRepository deliveryRepository;
     private final EventPublisher eventPublisher;
     private final OrderRepository orderRepository;
@@ -56,27 +60,78 @@ public class DeliveryService {
                 log.info("initiateDeliveries: fetching route for subOrderId={} | branch({},{}) → dest({},{})",
                         subOrder.getId(), branchLat, branchLng, destLat, destLng);
 
-                RouteInfo route = routingService.getRoute(branchLat, branchLng, destLat, destLng);
+                // ── Pricing ───────────────────────────────────────────────────
+                // Calculate and lock in the fare at delivery-creation time.
+                // We use PricingService which internally calls RoutingService,
+                // so we get both the route geometry AND the fare in one call.
+                PriceEstimate estimate = calculateFare(
+                        branchLat, branchLng, destLat, destLng, subOrder.getId());
 
-                log.info("initiateDeliveries: route fetched, polyline length={}",
-                        route != null && route.encodedPolyline() != null ? route.encodedPolyline().length() : "null");
-
+                // ── Build delivery ────────────────────────────────────────────
                 Delivery delivery = new Delivery();
                 delivery.setSubOrder(subOrder);
-                delivery.setRoute(GeometryUtils.decodePolylineToLineString(route.encodedPolyline()));
                 delivery.setDelivered(false);
                 delivery.setNote(order.getDeliveryNote());
 
+                // Store the encoded polyline as a LineString geometry
+                if (estimate.encodedPolyline() != null && !estimate.encodedPolyline().isEmpty()) {
+                    delivery.setRoute(GeometryUtils.decodePolylineToLineString(estimate.encodedPolyline()));
+                } else {
+                    // Routing fell back to Haversine (no polyline) — route stays null,
+                    // matching still works since it uses Redis geo, not the route column
+                    log.warn("initiateDeliveries: no polyline for subOrderId={} — route stored as null", subOrder.getId());
+                }
+
+                // Lock in the fare — survives any future pricing config changes
+                delivery.setDeliveryFee(estimate.totalFare());
+                delivery.setDistanceKm(estimate.distanceKm());
+                delivery.setDurationMinutes(estimate.durationMinutes());
+
                 Delivery savedDelivery = deliveryRepository.save(delivery);
-                log.info("initiateDeliveries: delivery saved id={} for subOrderId={}", savedDelivery.getId(), subOrder.getId());
+                log.info("initiateDeliveries: delivery saved id={} fee={} AZN dist={}km for subOrderId={}",
+                        savedDelivery.getId(), estimate.totalFare(), estimate.distanceKm(), subOrder.getId());
 
                 eventPublisher.publish(new DeliveryStartedEvent(order.getId(), savedDelivery.getId()));
+                log.info("initiateDeliveries: DeliveryStartedEvent published for deliveryId={}", savedDelivery.getId());
 
             } catch (Exception e) {
                 log.error("initiateDeliveries: FAILED for subOrderId={} — {}", subOrder.getId(), e.getMessage(), e);
                 throw e;
             }
         }
+    }
+
+    /**
+     * Calculates the fare for a delivery leg.
+     * Falls back gracefully — PricingService handles ORS/weather failures internally.
+     */
+    private PriceEstimate calculateFare(
+            double branchLat, double branchLng,
+            double destLat, double destLng,
+            Long subOrderId) {
+        try {
+            return pricingService.estimate(new PriceRequest(
+                    BigDecimal.valueOf(branchLat), BigDecimal.valueOf(branchLng),
+                    BigDecimal.valueOf(destLat),   BigDecimal.valueOf(destLng)
+            ));
+        } catch (Exception e) {
+            // PricingService has internal fallbacks but wrap defensively —
+            // a pricing failure should never block delivery creation.
+            log.error("initiateDeliveries: pricing failed for subOrderId={} — {}. Storing zero fare.",
+                    subOrderId, e.getMessage());
+            return zeroPriceEstimate();
+        }
+    }
+
+    private PriceEstimate zeroPriceEstimate() {
+        return new PriceEstimate(
+                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
+                BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE,
+                "CLEAR",
+                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
+                0.0, 0.0, "",
+                "Pricing unavailable at time of delivery creation"
+        );
     }
 
     @Transactional
@@ -126,7 +181,6 @@ public class DeliveryService {
         SubOrder subOrder = delivery.getSubOrder();
         Order parentOrder = subOrder.getParentOrder();
 
-        // Idempotency
         if (subOrder.getStatus() == Order.OrderStatus.DELIVERED || delivery.isDelivered()) {
             log.warn("Delivery {} already delivered — skipping.", delivery.getId());
             return;
@@ -137,7 +191,6 @@ public class DeliveryService {
             throw new IllegalStateException("Cannot complete a cancelled delivery.");
         }
 
-        // Security check
         String assignedCourier = delivery.getCourierUsername();
         if (assignedCourier == null) {
             log.error("Delivery {} has no courier assigned — rejecting finish by '{}'.",
@@ -150,19 +203,13 @@ public class DeliveryService {
             throw new SecurityException("You are not authorized to complete this delivery.");
         }
 
-        // Update this delivery and its subOrder
         subOrder.setStatus(Order.OrderStatus.DELIVERED);
         delivery.setDelivered(true);
         delivery.setDeliveryTime(LocalDateTime.now());
 
-        // Save delivery first so the DB is consistent before we check sibling subOrders
         deliveryRepository.save(delivery);
 
-        // Re-fetch all sibling deliveries fresh from DB to check if entire order is done.
-        // DO NOT use parentOrder.getSubOrders() here — it is a stale Hibernate collection
-        // that doesn't reflect the subOrder.setStatus() we just did on siblings in previous
-        // calls, which is why isEntireOrderFinished was always evaluating to false.
-        long totalSubOrders = deliveryRepository.countByParentOrderId(parentOrder.getId());
+        long totalSubOrders    = deliveryRepository.countByParentOrderId(parentOrder.getId());
         long finishedSubOrders = deliveryRepository.countFinishedByParentOrderId(parentOrder.getId());
 
         log.info("finishDelivery: delivery {} done. SubOrders total={}, finished={}",
@@ -176,15 +223,12 @@ public class DeliveryService {
 
         log.info("Completed delivery {} (SubOrder {}).", delivery.getId(), subOrder.getId());
 
-        // Publish delivered event (no LocalDateTime — Jackson can't serialize it without JSR310)
         eventPublisher.publish(new OrderDeliveredEvent(
                 parentOrder.getId(),
                 delivery.getId(),
                 courierUsername
         ));
 
-        // Fix: publish order-courier-unassigned so CourierService.markCourierAsIdle()
-        // clears the Redis active set and assignment key, stopping location pushes.
         eventPublisher.publish(new OrderCourierUnassignedEvent(courierUsername));
         log.info("finishDelivery: published order-courier-unassigned for courier '{}'", courierUsername);
     }

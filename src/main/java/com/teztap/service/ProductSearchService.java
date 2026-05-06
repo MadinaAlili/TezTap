@@ -103,7 +103,8 @@ public class ProductSearchService {
                 product.getLink(),
                 product.getImageUrl(),
                 product.getCategory() != null ? product.getCategory().getId() : null,
-                product.getMarket() != null ? product.getMarket().getId() : null
+                product.getMarket() != null ? product.getMarket().getId() : null,
+                false
         );
     }
 }

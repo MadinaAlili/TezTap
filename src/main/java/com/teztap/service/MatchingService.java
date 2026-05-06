@@ -26,6 +26,7 @@ import org.springframework.scheduling.TaskScheduler;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -48,7 +49,7 @@ public class MatchingService {
 
     private static final String GEO_KEY = "couriers:geo";
     private static final int SEARCH_RADIUS = 50;
-    private static final int COURIER_OFFER_TIMEOUT = 30;
+    private static final int COURIER_OFFER_TIMEOUT = 60;
 
     private final Map<Long, ScheduledFuture<?>> timeouts = new ConcurrentHashMap<>();
 
@@ -119,10 +120,12 @@ public class MatchingService {
         String courierUsername = candidates.get(0);
         updateMatchingState(deliveryId, courierUsername);
 
+        // Build the offer with pricing data that was locked in at delivery creation
+        DeliveryOfferRequest offer = buildOffer(deliveryId, courierUsername);
         messagingTemplate.convertAndSendToUser(
                 courierUsername,
                 WebSocketRoutes.COURIER_DELIVERY_OFFER,
-                new DeliveryOfferRequest(deliveryId, courierUsername)
+                offer
         );
 
         ScheduledFuture<?> future = taskScheduler.schedule(
@@ -132,9 +135,52 @@ public class MatchingService {
         timeouts.put(deliveryId, future);
     }
 
+    /**
+     * Builds the delivery offer sent to the courier via WebSocket.
+     * Reads the fare that was locked in when the delivery was created —
+     * no re-calculation needed, pricing config may have changed since then.
+     */
+    private DeliveryOfferRequest buildOffer(Long deliveryId, String courierUsername) {
+        Delivery delivery = deliveryRepository.findById(deliveryId).orElseThrow();
+
+        // Pickup address from market branch
+        String pickupAddress = "";
+        String dropoffAddress = "";
+        try {
+            pickupAddress = delivery.getSubOrder().getMarketBranch().getAddress().getFullAddress();
+            dropoffAddress = delivery.getSubOrder().getParentOrder().getOrderAddress().getFullAddress();
+        } catch (Exception e) {
+            System.err.println("[MatchingService] buildOffer: could not read addresses for delivery " + deliveryId);
+        }
+
+        // Use stored fare — falls back to zero if pricing failed at creation time
+        BigDecimal totalFare = delivery.getDeliveryFee() != null
+                ? delivery.getDeliveryFee() : BigDecimal.ZERO;
+        double distKm   = delivery.getDistanceKm()   != null ? delivery.getDistanceKm()   : 0.0;
+        double distMins = delivery.getDurationMinutes() != null ? delivery.getDurationMinutes() : 0.0;
+
+        return new DeliveryOfferRequest(
+                deliveryId,
+                courierUsername,
+                distKm,
+                distMins,
+                totalFare,
+                // We only store totalFare on delivery, not the full breakdown.
+                // Send nulls/zeros for breakdown fields — the client shows totalFare.
+                BigDecimal.ZERO,  // baseFare
+                BigDecimal.ZERO,  // distanceCharge
+                BigDecimal.ZERO,  // timeCharge
+                BigDecimal.ONE,   // peakHourMultiplier
+                BigDecimal.ONE,   // surgeMultiplier
+                BigDecimal.ONE,   // weatherMultiplier
+                "CLEAR",          // weatherCondition
+                BigDecimal.ZERO,  // serviceFee
+                pickupAddress,
+                dropoffAddress
+        );
+    }
+
     private void handleTimeout(Long deliveryId, String courier, Point marketLocation) {
-        // Fix 7: query parent order status via deliveryId — avoids passing deliveryId
-        // into orderRepository.findById() which expects an orderId.
         boolean stillWaiting = deliveryRepository
                 .findParentOrderStatusByDeliveryId(deliveryId)
                 .map(status -> status.equals(Order.OrderStatus.WAITING_FOR_COURIER.name()))
@@ -167,8 +213,6 @@ public class MatchingService {
         redisTemplate.delete("match:" + deliveryId);
     }
 
-    // Fix 5: persist the courier username on the Delivery row so finishDelivery()
-    // can verify the right courier is completing it. No Courier entity needed.
     @Transactional
     public void acceptOrder(Long deliveryId, String courierUsername) {
         cancelTimeout(deliveryId);
@@ -177,15 +221,8 @@ public class MatchingService {
         Delivery delivery = deliveryRepository.findById(deliveryId)
                 .orElseThrow(() -> new IllegalStateException("Delivery not found: " + deliveryId));
 
-        // Store username directly — no Courier entity lookup needed
         delivery.setCourierUsername(courierUsername);
-        delivery.getSubOrder().setCourierId(
-                // SubOrder.courierId is a Long; we can't store a username there.
-                // Leave it null — courierUsername on Delivery is the source of truth.
-                // If you want SubOrder to track the courier too, add a courierUsername
-                // column there as well (same pattern as Delivery).
-                delivery.getSubOrder().getCourierId()
-        );
+        delivery.getSubOrder().setCourierId(delivery.getSubOrder().getCourierId());
         deliveryRepository.save(delivery);
 
         System.err.println("[MatchingService] acceptOrder: courier '" + courierUsername +
@@ -197,20 +234,14 @@ public class MatchingService {
     public void rejectOrder(Long deliveryId, String courier) {
         cancelTimeout(deliveryId);
 
-        // Guard 1: check the matching state still exists in Redis.
-        // The 2-minute TTL may have expired between the offer being sent and the
-        // courier rejecting — if so, treat it the same as no couriers available.
         MatchingState state = getState(deliveryId);
         if (state == null) {
             System.err.println("[MatchingService] rejectOrder: matching state for delivery "
-                    + deliveryId + " no longer exists (TTL expired?) — publishing CourierNotFoundEvent");
+                    + deliveryId + " no longer exists — publishing CourierNotFoundEvent");
             eventPublisher.publish(new CourierNotFoundEvent(deliveryId));
             return;
         }
 
-        // Guard 2: check the delivery is still waiting for a courier.
-        // Protects against a race where another courier already accepted while
-        // this rejection was in flight.
         boolean stillWaiting = deliveryRepository
                 .findParentOrderStatusByDeliveryId(deliveryId)
                 .map(status -> status.equals(Order.OrderStatus.WAITING_FOR_COURIER.name()))

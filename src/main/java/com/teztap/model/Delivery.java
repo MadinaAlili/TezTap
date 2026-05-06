@@ -6,6 +6,7 @@ import lombok.Setter;
 import lombok.experimental.Accessors;
 import org.locationtech.jts.geom.LineString;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 @Entity
@@ -23,13 +24,9 @@ public class Delivery {
     @JoinColumn(name = "sub_order_id", referencedColumnName = "id", nullable = false)
     private SubOrder subOrder;
 
-    // Stores the assigned courier's username directly.
-    // No Courier entity is used — the User table is the source of truth.
-    // Add a DB migration: ALTER TABLE deliveries DROP COLUMN courier_id; ADD COLUMN courier_username VARCHAR(255);
     @Column(name = "courier_username")
     private String courierUsername;
 
-    // polyline stored as PostGIS geometry
     @Column(columnDefinition = "geometry(LineString,4326)")
     private LineString route;
 
@@ -40,4 +37,26 @@ public class Delivery {
 
     @Column
     private LocalDateTime deliveryTime;
+
+    // ── Pricing ───────────────────────────────────────────────────────────────
+    // Stored at delivery-creation time so the fare is locked in even if the
+    // pricing config changes later. Each sub-order has its own route so each
+    // delivery has its own fare — do not store this on Order.
+
+    /** Total fare charged to the customer for this delivery leg (AZN) */
+    @Column(precision = 10, scale = 2)
+    private BigDecimal deliveryFee;
+
+    /** Road distance in km — stored for courier display and record keeping */
+    @Column
+    private Double distanceKm;
+
+    /** Estimated travel time in minutes — stored for courier display */
+    @Column
+    private Double durationMinutes;
+
+    // DB migration:
+    // ALTER TABLE deliveries ADD COLUMN delivery_fee NUMERIC(10,2);
+    // ALTER TABLE deliveries ADD COLUMN distance_km DOUBLE PRECISION;
+    // ALTER TABLE deliveries ADD COLUMN duration_minutes DOUBLE PRECISION;
 }

@@ -5,14 +5,20 @@ import com.teztap.dto.CategoryWithProductsDto;
 import com.teztap.dto.ProductDto;
 import com.teztap.model.Category;
 import com.teztap.model.Product;
+import com.teztap.model.User;
 import com.teztap.repository.CategoryRepository;
+import com.teztap.repository.FavoriteRepository;
 import com.teztap.repository.ProductRepository;
+import com.teztap.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 
+import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
@@ -20,6 +26,8 @@ import java.util.stream.Collectors;
 public class CategoryService {
     private final ProductRepository productRepository;
     private final CategoryRepository categoryRepository;
+    private final FavoriteRepository favoriteRepository;
+    private final UserRepository userRepository;
 
     public List<CategoryDto> getAllCategories() {
         return categoryRepository.findAll()
@@ -52,14 +60,20 @@ public class CategoryService {
         return mapToCategoryDto(category);
     }
 
-    public List<ProductDto> getProductsByCategoryName(String categoryName, int page, int size) {
-        // Note: Spring Data pages are 0-indexed, so we do (page - 1)
+    public List<ProductDto> getProductsByCategoryName(String categoryName, int page, int size, String username) {
         Pageable pageable = PageRequest.of(page - 1, size);
+        Page<Product> productPage = productRepository.findByCategoryNameIgnoreCase(categoryName, pageable);
+        List<Product> products = productPage.getContent();
 
-        // This executes a highly optimized LIMIT/OFFSET query
-        return productRepository.findByCategoryNameIgnoreCase(categoryName, pageable)
-                .stream()
-                .map(this::mapToProductDto) // Your existing DTO mapping logic
+        // Bulk fetch favorite status
+        Set<Long> favoritedProductIds = getFavoritedProductIdsInBatch(products, username);
+
+        // Map to Record using the updated method
+        return products.stream()
+                .map(product -> mapToProductDto(
+                        product,
+                        favoritedProductIds.contains(product.getId()) // Check status here
+                ))
                 .toList();
     }
 
@@ -68,14 +82,37 @@ public class CategoryService {
         return (int) Math.ceil((double) totalProducts / size);
     }
 
-    public List<ProductDto> getProductsByCategoryId(Long categoryId, int page, int size) {
-        // Spring Data pages are 0-indexed
+    public List<ProductDto> getProductsByCategoryId(Long categoryId, int page, int size, String username) {
         Pageable pageable = PageRequest.of(page - 1, size);
 
-        return productRepository.findByCategoryId(categoryId, pageable)
-                .stream()
-                .map(this::mapToProductDto) // Replace with your actual mapping logic
+        // 1. Fetch the page of products
+        Page<Product> productPage = productRepository.findByCategoryId(categoryId, pageable);
+        List<Product> products = productPage.getContent();
+
+        // 2. Bulk fetch favorite status
+        Set<Long> favoritedProductIds = getFavoritedProductIdsInBatch(products, username);
+
+        // 3. Map to DTO
+        return products.stream()
+                .map(product -> mapToProductDto(
+                        product,
+                        favoritedProductIds.contains(product.getId()) // Check status here
+                ))
                 .toList();
+    }
+
+    private Set<Long> getFavoritedProductIdsInBatch(List<Product> products, String username) {
+        // If user is not logged in, or there are no products, return an empty set
+        if (username == null || products.isEmpty()) {
+            return Collections.emptySet();
+        }
+
+        User user = userRepository.findByUsername(username)
+                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        List<Long> productIds = products.stream().map(Product::getId).toList();
+
+        return favoriteRepository.findFavoritedProductIdsByUserAndProductIds(user, productIds);
     }
 
     // ==========================================
@@ -102,13 +139,11 @@ public class CategoryService {
      * Maps a Product entity to your existing ProductDto.
      * Note: Adjust the getters to match your actual Product entity fields!
      */
-    private ProductDto mapToProductDto(Product product) {
+    private ProductDto mapToProductDto(Product product, boolean isFavorited) {
         if (product == null) {
             return null;
         }
 
-        // Assuming ProductDto is a Record or has a standard constructor.
-        // Update these parameters to match exactly what your ProductDto expects.
         return new ProductDto(
                 product.getId(),
                 product.getName(),
@@ -118,7 +153,8 @@ public class CategoryService {
                 product.getLink(),
                 product.getImageUrl(),
                 product.getCategory() != null ? product.getCategory().getId() : null,
-                product.getMarket() != null ? product.getMarket().getId() : null
+                product.getMarket() != null ? product.getMarket().getId() : null,
+                isFavorited //  Pass it into the constructor here
         );
     }
 
@@ -126,7 +162,7 @@ public class CategoryService {
      * Maps a Category entity to a CategoryWithProductsDto.
      * (Only needed if you decided to keep Endpoint #4)
      */
-    private CategoryWithProductsDto mapToCategoryWithProductsDto(Category category) {
+    private CategoryWithProductsDto mapToCategoryWithProductsDto(Category category, Set<Long> favoritedProductIds) {
         if (category == null) {
             return null;
         }
@@ -134,7 +170,11 @@ public class CategoryService {
         // Safely map the list of products, handling potential nulls
         List<ProductDto> productDtos = category.getProducts() != null
                 ? category.getProducts().stream()
-                .map(this::mapToProductDto)
+                // Replaced this::mapToProductDto with a lambda to pass the boolean
+                .map(product -> mapToProductDto(
+                        product,
+                        favoritedProductIds != null && favoritedProductIds.contains(product.getId())
+                ))
                 .toList()
                 : List.of();
 

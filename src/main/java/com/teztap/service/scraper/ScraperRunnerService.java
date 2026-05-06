@@ -162,7 +162,8 @@ public class ScraperRunnerService {
                 p.getLink(),
                 p.getImageUrl(),
                 p.getCategory() != null ? p.getCategory().getId() : null,
-                p.getMarket() != null ? p.getMarket().getId() : null
+                p.getMarket() != null ? p.getMarket().getId() : null,
+                false
         );
     }
 }

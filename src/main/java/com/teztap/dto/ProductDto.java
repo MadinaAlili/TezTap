@@ -11,6 +11,7 @@ public record ProductDto(
         String link,
         String imageUrl,
         Long categoryId,
-        Long marketId
+        Long marketId,
+        boolean isFavorited
 ) {}
 

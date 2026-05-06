@@ -38,20 +38,18 @@ public class CourierDeliveryService {
     }
 
     private CourierDeliveryDto toDto(Delivery d) {
-        // Pickup = market branch address (where courier picks up the order)
         Address branchAddress = d.getSubOrder().getMarketBranch().getAddress();
         AddressDto pickup = new AddressDto(
-                branchAddress.getLocation().getX(), // longitude
-                branchAddress.getLocation().getY(), // latitude
+                branchAddress.getLocation().getX(),
+                branchAddress.getLocation().getY(),
                 branchAddress.getFullAddress(),
                 branchAddress.getAdditionalInfo()
         );
 
-        // Dropoff = customer's delivery address
         Address orderAddress = d.getSubOrder().getParentOrder().getOrderAddress();
         AddressDto dropoff = new AddressDto(
-                orderAddress.getLocation().getX(), // longitude
-                orderAddress.getLocation().getY(), // latitude
+                orderAddress.getLocation().getX(),
+                orderAddress.getLocation().getY(),
                 orderAddress.getFullAddress(),
                 orderAddress.getAdditionalInfo()
         );
@@ -66,7 +64,10 @@ public class CourierDeliveryService {
                 d.getSubOrder().getMarketBranch().getMarket().getName(),
                 d.getNote(),
                 pickup,
-                dropoff
+                dropoff,
+                d.getDeliveryFee(),
+                d.getDistanceKm(),
+                d.getDurationMinutes()
         );
     }
 }
